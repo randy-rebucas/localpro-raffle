@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Raffle event definition
+model Raffle {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  status      RaffleStatus @default(DRAFT)
+  createdAt   DateTime  @default(now())
+  drawnAt     DateTime?
+  createdBy   String    // FK to User
+  user        User      @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  
+  tiers       Tier[]
+  participants Participant[]
+  winners     Winner[]
+  shares      RaffleShare[]
+  
+  @@index([status])
+  @@index([createdAt])
+  @@index([createdBy])
+}
+
+enum RaffleStatus {
+  DRAFT
+  ACTIVE
+  DRAWN
+}
+
+// User for authentication & ownership
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  password  String?   // Hashed password or null if using OAuth
+  name      String?
+  createdAt DateTime  @default(now())
+  
+  raffles   Raffle[]
+  templates Template[]
+  
+  @@index([email])
+}
+
+// Share link for public results
+model RaffleShare {
+  id        String    @id @default(cuid())
+  raffle    Raffle    @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId  String
+  shareKey  String    @unique @default(cuid())
+  createdAt DateTime  @default(now())
+  
+  @@index([raffleId])
+  @@index([shareKey])
+}
+
+// Reusable tier template 
+model Template {
+  id          String    @id @default(cuid())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  name        String
+  description String?
+  // Store tier configurations as JSON
+  tiers       String    // JSON array of { prizeName, prizeAmount, winnerCount }
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Prize tier definition
+model Tier {
+  id            String    @id @default(cuid())
+  raffle        Raffle    @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId      String
+  prizeName     String
+  prizeAmount   Decimal   @default(0)
+  winnerCount   Int       @default(1)
+  tierOrder     Int       @default(0)
+  createdAt     DateTime  @default(now())
+  
+  winners       Winner[]
+  
+  @@unique([raffleId, tierOrder])
+  @@index([raffleId])
+}
+
+// Participant entry for raffle
+model Participant {
+  id        String    @id @default(cuid())
+  raffle    Raffle    @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId  String
+  name      String
+  email     String?
+  addedAt   DateTime  @default(now())
+  
+  winnerOf  Winner[]
+  
+  @@unique([raffleId, name, email])
+  @@index([raffleId])
+}
+
+// Winner record after draw
+model Winner {
+  id            String    @id @default(cuid())
+  raffle        Raffle    @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId      String
+  tier          Tier      @relation(fields: [tierId], references: [id], onDelete: Cascade)
+  tierId        String
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  participantId String
+  drawnAt       DateTime  @default(now())
+  emailSent     Boolean   @default(false)
+  
+  @@unique([raffleId, tierId, participantId])
+  @@index([raffleId])
+  @@index([tierId])
+  @@index([participantId])
+}
