@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components';
 
@@ -43,18 +43,13 @@ interface Analytics {
 
 export default function RaffleAnalytics() {
   const params = useParams();
-  const router = useRouter();
   const raffleId = params.id as string;
 
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    fetchAnalytics();
-  }, [raffleId]);
-
-  const fetchAnalytics = async () => {
+  const fetchAnalytics = useCallback(async () => {
     try {
       const res = await fetch(`/api/raffles/${raffleId}/analytics`);
       if (!res.ok) throw new Error('Failed to fetch analytics');
@@ -65,7 +60,11 @@ export default function RaffleAnalytics() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [raffleId]);
+
+  useEffect(() => {
+    fetchAnalytics();
+  }, [fetchAnalytics]);
 
   if (loading) {
     return (
@@ -290,8 +289,11 @@ export default function RaffleAnalytics() {
 
           {/* Action Buttons */}
           <div className="flex gap-4 justify-between pt-8 border-t border-gray-200">
-            <Link href={`/raffles/${raffleId}/results`}>
-              <Button variant="secondary">View Results</Button>
+            <Link
+              href={`/raffles/${raffleId}/results`}
+              className="inline-flex items-center justify-center rounded-lg bg-gray-300 px-6 py-2 text-base font-medium text-gray-800 transition hover:bg-gray-400"
+            >
+              View Results
             </Link>
             <Button
               onClick={() => window.print()}

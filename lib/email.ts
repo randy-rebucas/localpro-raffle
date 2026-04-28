@@ -98,9 +98,16 @@ export async function sendWinnerBatchEmails(
   const results = await Promise.allSettled(
     winners.map((winner) => sendWinnerEmail(winner))
   );
+  type WinnerEmailResult = Awaited<ReturnType<typeof sendWinnerEmail>>;
 
-  const successful = results.filter((r) => r.status === 'fulfilled' && (r.value as any).success).length;
-  const failed = results.filter((r) => r.status === 'rejected' || (r.status === 'fulfilled' && !(r.value as any).success)).length;
+  const successful = results.filter(
+    (result): result is PromiseFulfilledResult<WinnerEmailResult> => (
+      result.status === 'fulfilled' && result.value.success
+    )
+  ).length;
+  const failed = results.filter((result) => (
+    result.status === 'rejected' || (result.status === 'fulfilled' && !result.value.success)
+  )).length;
 
   console.log(`📧 Batch email send complete: ${successful} sent, ${failed} failed`);
   return { successful, failed, results };

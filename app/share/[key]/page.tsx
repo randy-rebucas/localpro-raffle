@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -39,11 +39,7 @@ export default function PublicSharePage() {
   const [error, setError] = useState('');
   const [expandedTiers, setExpandedTiers] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    fetchShareData();
-  }, [shareKey]);
-
-  const fetchShareData = async () => {
+  const fetchShareData = useCallback(async () => {
     try {
       const res = await fetch(`/api/raffles/share/${shareKey}`);
       if (!res.ok) {
@@ -60,7 +56,11 @@ export default function PublicSharePage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [shareKey]);
+
+  useEffect(() => {
+    fetchShareData();
+  }, [fetchShareData]);
 
   const toggleTier = (tierId: string) => {
     const newExpanded = new Set(expandedTiers);

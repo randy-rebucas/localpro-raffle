@@ -1,9 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Button } from '@/components';
+import {
+  FaArrowLeft,
+  FaArrowRight,
+  FaCheck,
+  FaGift,
+  FaShieldAlt,
+  FaSpinner,
+  FaTrophy,
+  FaUsers,
+} from 'react-icons/fa';
 
 interface Participant {
   id: string;
@@ -25,6 +34,17 @@ interface Winner {
   participantName: string;
 }
 
+interface PersistedWinner {
+  participantId: string;
+  participant: {
+    name: string;
+  };
+  tierId: string;
+  tier: {
+    prizeName: string;
+  };
+}
+
 interface Raffle {
   id: string;
   title: string;
@@ -40,7 +60,6 @@ export default function RaffleDrawPage() {
   const raffleId = params.id as string;
 
   const [raffle, setRaffle] = useState<Raffle | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
   const [phase, setPhase] = useState<DrawPhase>('loading');
@@ -48,13 +67,10 @@ export default function RaffleDrawPage() {
   const [winnersThisTier, setWinnersThisTier] = useState(0);
   const [selectedWinnerId, setSelectedWinnerId] = useState<string | null>(null);
   const [allWinners, setAllWinners] = useState<Winner[]>([]);
+  const [serverWinners, setServerWinners] = useState<Winner[]>([]);
   const [spinningIndices, setSpinningIndices] = useState<number[]>([]);
 
-  useEffect(() => {
-    fetchRaffle();
-  }, [raffleId]);
-
-  const fetchRaffle = async () => {
+  const fetchRaffle = useCallback(async () => {
     try {
       const res = await fetch(`/api/raffles/${raffleId}`);
       if (!res.ok) throw new Error('Failed to fetch raffle');
@@ -63,317 +79,367 @@ export default function RaffleDrawPage() {
       setPhase('selecting');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
-      setLoading(false);
+    }
+  }, [raffleId]);
+
+  useEffect(() => {
+    fetchRaffle();
+  }, [fetchRaffle]);
+
+  const pickWinner = async () => {
+    if (!raffle || phase !== 'selecting') return;
+
+    try {
+      let winnerQueue = serverWinners;
+
+      if (winnerQueue.length === 0) {
+        setPhase('spinning');
+        const res = await fetch(`/api/raffles/${raffleId}/draw`, {
+          method: 'POST',
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to save results');
+        }
+
+        winnerQueue = data.winners.map((winner: PersistedWinner) => ({
+          participantId: winner.participantId,
+          participantName: winner.participant.name,
+          tierId: winner.tierId,
+          tierName: winner.tier.prizeName,
+        }));
+        setServerWinners(winnerQueue);
+      }
+
+      revealWinner(winnerQueue, allWinners.length);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to draw winners');
+      setPhase('selecting');
     }
   };
 
-  const pickWinner = async () => {
+  const revealWinner = (winnerQueue: Winner[], nextIndex: number) => {
     if (!raffle) return;
 
-    const currentTier = raffle.tiers[currentTierIndex];
-    
-    setPhase('spinning');
-
-    // Get list of eligible participants (not already selected in this tier)
-    const eligibleIndices = raffle.participants
-      .map((_, idx) => idx)
-      .filter(idx => !allWinners.some(w => 
-        w.participantId === raffle.participants[idx].id && 
-        w.tierId === currentTier.id
-      ));
-
-    if (eligibleIndices.length === 0) {
-      moveToNextTier();
+    const nextWinner = winnerQueue[nextIndex];
+    if (!nextWinner) {
+      redirectToResults();
       return;
     }
 
-    // Animate spinning with simple highlight
+    const nextTierIndex = raffle.tiers.findIndex((tier) => tier.id === nextWinner.tierId);
+    if (nextTierIndex === -1) {
+      setError('Draw result references an unknown prize tier');
+      setPhase('selecting');
+      return;
+    }
+
+    const winnersBeforeThisTier = allWinners.filter((winner) => winner.tierId === nextWinner.tierId).length;
+    const eligibleIndices = raffle.participants
+      .map((participant, idx) => ({ participant, idx }))
+      .filter(({ participant }) => !allWinners.some((winner) => winner.participantId === participant.id))
+      .map(({ idx }) => idx);
+    const targetIndex = raffle.participants.findIndex((participant) => participant.id === nextWinner.participantId);
+
+    setCurrentTierIndex(nextTierIndex);
+    setPhase('spinning');
+
     const spinDuration = 1500;
     const spinInterval = setInterval(() => {
-      setSpinningIndices([
-        eligibleIndices[Math.floor(Math.random() * eligibleIndices.length)]
-      ]);
+      const randomIndex = eligibleIndices[Math.floor(Math.random() * eligibleIndices.length)] ?? targetIndex;
+      setSpinningIndices([randomIndex]);
     }, 100);
 
-    // Select winner after spin
     setTimeout(() => {
       clearInterval(spinInterval);
-      const winnerIdx = eligibleIndices[Math.floor(Math.random() * eligibleIndices.length)];
-      const winner = raffle.participants[winnerIdx];
-
-      setSelectedWinnerId(winner.id);
+      setSelectedWinnerId(nextWinner.participantId);
       setSpinningIndices([]);
       setPhase('won');
-
-      // Add to winners list
-      const newWinner: Winner = {
-        participantId: winner.id,
-        tierId: currentTier.id,
-        tierName: currentTier.prizeName,
-        participantName: winner.name,
-      };
-      setAllWinners([...allWinners, newWinner]);
-      setWinnersThisTier(winnersThisTier + 1);
+      setAllWinners((prev) => [...prev, nextWinner]);
+      setWinnersThisTier(winnersBeforeThisTier + 1);
     }, spinDuration);
   };
 
-  const moveToNextTier = async () => {
-    if (!raffle) return;
-
-    if (currentTierIndex >= raffle.tiers.length - 1) {
-      // All tiers complete - save to database
-      submitDrawResults();
-    } else {
-      setCurrentTierIndex(currentTierIndex + 1);
-      setWinnersThisTier(0);
-      setSelectedWinnerId(null);
-      setPhase('selecting');
-    }
-  };
-
-  const submitDrawResults = async () => {
+  const redirectToResults = () => {
     setPhase('complete');
-    try {
-      const res = await fetch(`/api/raffles/${raffleId}/draw`, {
-        method: 'POST',
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to save results');
-      }
-
-      // Redirect to results after delay
-      setTimeout(() => {
-        router.push(`/raffles/${raffleId}/results`);
-      }, 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save results');
-      setPhase('selecting');
-    }
+    setTimeout(() => {
+      router.push(`/raffles/${raffleId}/results`);
+    }, 1200);
   };
 
   if (!raffle) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center px-4">
-        <div className="bg-white rounded-2xl shadow-2xl p-8 text-center">
-          <div className="animate-spin h-12 w-12 border-4 border-blue-200 border-t-blue-600 rounded-full mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading raffle...</p>
+      <div className="flex min-h-screen items-center justify-center bg-white px-4">
+        <div className="rounded-2xl border border-slate-100 bg-white p-8 text-center shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
+          <div className="mx-auto mb-4 flex h-12 w-12 animate-spin items-center justify-center rounded-full border-4 border-blue-100 border-t-blue-600" />
+          <p className="text-sm font-medium text-slate-600">Loading raffle...</p>
         </div>
       </div>
     );
   }
 
   const currentTier = raffle.tiers[currentTierIndex];
+  const totalWinners = raffle.tiers.reduce((sum, tier) => sum + tier.winnerCount, 0);
+  const overallProgress = totalWinners > 0 ? (allWinners.length / totalWinners) * 100 : 0;
+  const tierProgress = currentTier ? (winnersThisTier / currentTier.winnerCount) * 100 : 0;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-600 to-purple-600 p-4 sm:p-6">
-      {/* Header */}
-      <div className="max-w-7xl mx-auto mb-6">
-        <div className="flex items-center justify-between">
-          <Link href={`/raffles/${raffleId}`} className="text-blue-100 hover:text-white transition">
-            ← Back
+    <div className="min-h-screen bg-white text-slate-950">
+      <header className="border-b border-slate-100 bg-white">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <Link href="/" className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-blue-100 text-blue-600">
+              <FaGift size={18} />
+            </span>
+            <span className="text-lg font-bold tracking-tight">Lucky Draw</span>
           </Link>
-          <h1 className="text-3xl sm:text-4xl font-bold text-white text-center flex-1">{raffle.title}</h1>
-          <div className="w-12"></div>
+
+          <Link
+            href={`/raffles/${raffleId}/setup`}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+          >
+            <FaArrowLeft size={12} />
+            Back to Setup
+          </Link>
         </div>
-      </div>
+      </header>
 
-      {error && (
-        <div className="max-w-7xl mx-auto mb-6 p-4 bg-red-100 border border-red-300 text-red-800 rounded-lg">
-          {error}
+      <main className="relative overflow-hidden px-4 py-8 sm:px-6 lg:px-8">
+        <div className="pointer-events-none absolute inset-x-0 top-0 mx-auto h-52 max-w-7xl">
+          {[
+            ['left-[4%] top-16 bg-blue-300', 'h-2 w-2'],
+            ['left-[14%] top-28 bg-emerald-300', 'h-2 w-2'],
+            ['left-[23%] top-8 bg-pink-200', 'h-1.5 w-1.5'],
+            ['left-[29%] top-20 bg-purple-300', 'h-3 w-3 rotate-45'],
+            ['right-[12%] top-16 bg-amber-200', 'h-3 w-3 rotate-45'],
+          ].map(([position, size], index) => (
+            <span key={index} className={`absolute rounded-sm ${position} ${size}`} />
+          ))}
         </div>
-      )}
 
-      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Left Column - Controls & Progress */}
-        <div className="lg:col-span-1 space-y-6">
-          {/* Tier Card */}
-          <div className="bg-white bg-opacity-95 rounded-2xl p-6 shadow-xl">
-            <p className="text-gray-600 text-sm font-medium mb-2">Tier {currentTierIndex + 1} of {raffle.tiers.length}</p>
-            <h2 className="text-3xl font-bold text-gray-900 mb-3">{currentTier.prizeName}</h2>
-            <div className="text-4xl font-bold bg-gradient-to-r from-green-500 to-emerald-600 bg-clip-text text-transparent mb-4">
-              ₱{Number(currentTier.prizeAmount).toFixed(2)}
-            </div>
-
-            {/* Progress */}
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <p className="text-sm text-gray-600">Winners</p>
-                <p className="text-lg font-bold text-gray-900">{winnersThisTier} / {currentTier.winnerCount}</p>
-              </div>
-              <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-500"
-                  style={{
-                    width: `${(winnersThisTier / currentTier.winnerCount) * 100}%`,
-                  }}
-                ></div>
-              </div>
-            </div>
-
-            {/* Overall Progress */}
-            <div className="mb-6">
-              <p className="text-xs text-gray-600 mb-2">Overall Progress</p>
-              <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-yellow-400 to-orange-500 transition-all duration-500"
-                  style={{
-                    width: `${((currentTierIndex + winnersThisTier / currentTier.winnerCount) / raffle.tiers.length) * 100}%`,
-                  }}
-                ></div>
-              </div>
-            </div>
-
-            {/* Action Button */}
-            {phase === 'selecting' && (
-              <Button
-                onClick={pickWinner}
-                width="full"
-                size="lg"
-                variant="warning"
-              >
-                🎲 Pick Winner
-              </Button>
-            )}
-
-            {phase === 'spinning' && (
-              <div className="w-full py-4 bg-blue-500 text-white rounded-xl font-bold text-lg text-center animate-pulse">
-                ⏳ Picking...
-              </div>
-            )}
-
-            {phase === 'complete' && (
-              <div className="text-center">
-                <p className="text-2xl font-bold text-green-600 mb-2">✓ Complete!</p>
-                <p className="text-sm text-gray-600">Redirecting...</p>
-              </div>
-            )}
+        <section className="relative mx-auto max-w-3xl text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 text-blue-600">
+            <FaTrophy size={26} />
           </div>
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-blue-600">Live Draw</p>
+          <h1 className="mt-3 text-4xl font-bold tracking-tight text-slate-950">{raffle.title}</h1>
+          <p className="mt-4 text-sm text-slate-500">Pick winners from your eligible participants using the saved server-side draw order.</p>
+        </section>
 
-          {/* Participants Count */}
-          <div className="bg-white bg-opacity-90 rounded-2xl p-4 shadow-lg">
-            <p className="text-gray-600 text-sm mb-1">Total Participants</p>
-            <p className="text-3xl font-bold text-gray-900">{raffle.participants.length}</p>
+        {error && (
+          <div className="relative mx-auto mt-8 max-w-7xl rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
+            {error}
           </div>
+        )}
 
-          {/* Tiers List */}
-          <div className="bg-white bg-opacity-10 backdrop-blur-md rounded-2xl p-4 border border-white border-opacity-20">
-            <h3 className="text-white font-bold text-sm mb-3">All Tiers</h3>
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {raffle.tiers.map((tier, idx) => (
-                <div
-                  key={tier.id}
-                  className={`p-3 rounded-lg transition ${
-                    idx === currentTierIndex
-                      ? 'bg-white bg-opacity-20 border border-white'
-                      : 'bg-white bg-opacity-10 border border-white border-opacity-20'
-                  }`}
-                >
-                  <p className="text-white font-semibold text-sm">{tier.prizeName}</p>
-                  <p className="text-blue-100 text-xs">₱{Number(tier.prizeAmount).toFixed(0)} • {tier.winnerCount}x</p>
+        <div className="relative mx-auto mt-10 grid max-w-7xl gap-6 lg:grid-cols-[320px_1fr]">
+          <aside className="space-y-6">
+            <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
+              <p className="text-sm font-medium text-slate-500">Tier {currentTierIndex + 1} of {raffle.tiers.length}</p>
+              <h2 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">{currentTier.prizeName}</h2>
+              <p className="mt-3 text-4xl font-bold text-blue-600">
+                ₱{Number(currentTier.prizeAmount).toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+              </p>
+
+              <div className="mt-6">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-sm text-slate-500">Tier winners</p>
+                  <p className="text-sm font-bold text-slate-950">{winnersThisTier} / {currentTier.winnerCount}</p>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column - Participants & Winners */}
-        <div className="lg:col-span-3 space-y-6">
-          {/* Participants Grid */}
-          <div className="bg-black bg-opacity-20 rounded-2xl backdrop-blur-md border-2 border-white border-opacity-30 p-6 sm:p-8">
-            <h3 className="text-white font-bold mb-4 text-sm">Participants ({raffle.participants.length})</h3>
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-              {raffle.participants.map((participant, idx) => {
-                const isSpinning = spinningIndices.includes(idx);
-                const isWinner = allWinners.some(
-                  w => w.participantId === participant.id && w.tierId === currentTier.id
-                );
-
-                // Skip winners from display
-                if (isWinner) return null;
-
-                return (
+                <div className="h-3 overflow-hidden rounded-full bg-slate-100">
                   <div
-                    key={participant.id}
-                    className={`relative aspect-square rounded-xl p-3 font-semibold text-center flex flex-col items-center justify-center transition-all duration-200 cursor-default overflow-hidden ${
-                      isSpinning
-                        ? 'bg-gradient-to-br from-yellow-400 to-yellow-500 text-gray-900 ring-4 ring-yellow-500 shadow-lg scale-105 animate-pulse'
-                        : 'bg-gradient-to-br from-slate-300 to-slate-400 text-gray-900 hover:from-slate-200 hover:to-slate-300 shadow-md'
+                    className="h-full rounded-full bg-blue-600 transition-all duration-500"
+                    style={{ width: `${tierProgress}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-6">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-sm text-slate-500">Overall progress</p>
+                  <p className="text-sm font-bold text-slate-950">{allWinners.length} / {totalWinners}</p>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-amber-400 transition-all duration-500"
+                    style={{ width: `${overallProgress}%` }}
+                  />
+                </div>
+              </div>
+
+              {phase === 'selecting' && (
+                <button
+                  type="button"
+                  onClick={pickWinner}
+                  className="mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(37,99,235,0.18)] transition hover:bg-blue-700"
+                >
+                  <FaTrophy size={14} />
+                  Pick Winner
+                </button>
+              )}
+
+              {phase === 'spinning' && (
+                <div className="mt-6 flex h-12 w-full items-center justify-center gap-3 rounded-lg bg-blue-50 text-sm font-bold text-blue-700">
+                  <FaSpinner className="animate-spin" size={15} />
+                  Picking...
+                </div>
+              )}
+
+              {phase === 'complete' && (
+                <div className="mt-6 rounded-lg bg-emerald-50 p-4 text-center">
+                  <p className="flex items-center justify-center gap-2 text-sm font-bold text-emerald-700">
+                    <FaCheck size={14} />
+                    Complete
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">Redirecting to results...</p>
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-purple-50 text-purple-600">
+                  <FaUsers size={16} />
+                </span>
+                <div>
+                  <p className="text-xs text-slate-500">Total Participants</p>
+                  <p className="text-2xl font-bold text-slate-950">{raffle.participants.length}</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
+              <h3 className="text-sm font-bold text-slate-950">Prize Tiers</h3>
+              <div className="mt-4 max-h-72 space-y-2 overflow-y-auto">
+                {raffle.tiers.map((tier, idx) => (
+                  <div
+                    key={tier.id}
+                    className={`rounded-lg border p-3 transition ${
+                      idx === currentTierIndex
+                        ? 'border-blue-200 bg-blue-50'
+                        : 'border-slate-100 bg-white'
                     }`}
                   >
-                    <div className="text-xs sm:text-sm font-bold truncate w-full relative z-10">
-                      {participant.name}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Winners List */}
-          {allWinners.length > 0 && (
-            <div className="bg-white bg-opacity-10 backdrop-blur-md rounded-2xl p-6 border border-white border-opacity-20">
-              <h3 className="text-white font-bold mb-4">Winners ({allWinners.length})</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {allWinners.map((winner, idx) => (
-                  <div key={idx} className="flex items-center gap-3 p-3 bg-white bg-opacity-10 rounded-lg border border-white border-opacity-20">
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-yellow-400 text-gray-900 flex items-center justify-center font-bold text-sm">
-                      {idx + 1}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white font-semibold truncate text-sm">{winner.participantName}</p>
-                      <p className="text-blue-200 text-xs">{winner.tierName}</p>
-                    </div>
+                    <p className="text-sm font-semibold text-slate-950">{tier.prizeName}</p>
+                    <p className="mt-1 text-xs text-slate-500">₱{Number(tier.prizeAmount).toFixed(0)} • {tier.winnerCount} winner{tier.winnerCount !== 1 ? 's' : ''}</p>
                   </div>
                 ))}
               </div>
+            </section>
+          </aside>
+
+          <section className="space-y-6">
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_30px_rgba(15,23,42,0.04)] sm:p-8">
+              <div className="mb-5 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-950">Participants</h3>
+                  <p className="mt-1 text-sm text-slate-500">{raffle.participants.length} eligible entries in this draw</p>
+                </div>
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                  {phase === 'spinning' ? 'Drawing' : 'Ready'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
+                {raffle.participants.map((participant, idx) => {
+                  const isSpinning = spinningIndices.includes(idx);
+                  const isWinner = allWinners.some((winner) => winner.participantId === participant.id);
+
+                  if (isWinner) return null;
+
+                  return (
+                    <div
+                      key={participant.id}
+                      className={`relative flex aspect-square flex-col items-center justify-center overflow-hidden rounded-xl border p-3 text-center transition-all duration-200 ${
+                        isSpinning
+                          ? 'scale-105 border-amber-300 bg-amber-50 text-amber-900 shadow-lg ring-4 ring-amber-100'
+                          : 'border-slate-100 bg-slate-50 text-slate-700 hover:bg-white hover:shadow-sm'
+                      }`}
+                    >
+                      <span className={`mb-2 flex h-10 w-10 items-center justify-center rounded-full text-xs font-bold ${isSpinning ? 'bg-amber-200 text-amber-900' : 'bg-white text-blue-600'}`}>
+                        {participant.name.slice(0, 2).toUpperCase()}
+                      </span>
+                      <span className="relative z-10 w-full truncate text-xs font-bold sm:text-sm">
+                        {participant.name}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          )}
+
+            {allWinners.length > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
+                <h3 className="text-lg font-bold text-slate-950">Winners ({allWinners.length})</h3>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {allWinners.map((winner, idx) => (
+                    <div key={`${winner.participantId}-${winner.tierId}`} className="flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50 p-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100 text-sm font-bold text-amber-700">
+                        {idx + 1}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-slate-950">{winner.participantName}</p>
+                        <p className="text-xs text-slate-500">{winner.tierName}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
         </div>
-      </div>
 
-      {/* Winner Modal */}
+        <div className="mx-auto mt-8 max-w-7xl text-center text-slate-500">
+          <div className="flex items-center justify-center gap-2 text-sm font-bold text-slate-700">
+            <FaShieldAlt size={16} />
+            Fair. Random. Transparent.
+          </div>
+          <p className="mt-2 text-xs">All draws are conducted securely and fairly using a certified random selection process.</p>
+        </div>
+      </main>
+
       {phase === 'won' && selectedWinnerId && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-2xl w-full transform animate-in">
-            {/* Confetti elements */}
-            <div className="absolute top-8 left-1/4 text-6xl animate-bounce">🎉</div>
-            <div className="absolute top-12 right-1/4 text-6xl animate-bounce" style={{ animationDelay: '0.2s' }}>🎊</div>
-            <div className="absolute bottom-20 left-1/3 text-5xl animate-bounce" style={{ animationDelay: '0.4s' }}>✨</div>
-
-            {/* Content */}
-            <div className="text-center relative z-10">
-              <p className="text-gray-600 text-sm font-medium mb-3">🏆 WINNER 🏆</p>
-              <h2 className="text-5xl sm:text-6xl font-bold text-gray-900 mb-6">
-                {raffle.participants.find(p => p.id === selectedWinnerId)?.name}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-2xl overflow-hidden rounded-3xl bg-white p-8 shadow-2xl">
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-blue-50 to-transparent" />
+            <div className="relative z-10 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+                <FaTrophy size={30} />
+              </div>
+              <p className="text-sm font-bold uppercase tracking-[0.25em] text-blue-600">Winner</p>
+              <h2 className="mt-4 text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
+                {raffle.participants.find((participant) => participant.id === selectedWinnerId)?.name}
               </h2>
 
-              <div className="grid grid-cols-2 gap-4 mb-8">
-                <div className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-2xl p-6">
-                  <p className="text-gray-600 text-sm mb-2">Prize</p>
-                  <p className="text-2xl font-bold text-gray-900">{currentTier.prizeName}</p>
+              <div className="mt-8 grid gap-4 sm:grid-cols-2">
+                <div className="rounded-2xl bg-blue-50 p-6">
+                  <p className="text-sm text-slate-500">Prize</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-950">{currentTier.prizeName}</p>
                 </div>
-                <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl p-6">
-                  <p className="text-gray-600 text-sm mb-2">Amount</p>
-                  <p className="text-2xl font-bold text-green-600">₱{Number(currentTier.prizeAmount).toFixed(2)}</p>
+                <div className="rounded-2xl bg-emerald-50 p-6">
+                  <p className="text-sm text-slate-500">Amount</p>
+                  <p className="mt-2 text-2xl font-bold text-emerald-700">₱{Number(currentTier.prizeAmount).toFixed(2)}</p>
                 </div>
               </div>
 
-              {/* Action Button */}
-              <Button
+              <button
+                type="button"
                 onClick={() => {
-                  if (winnersThisTier >= currentTier.winnerCount) {
-                    setTimeout(moveToNextTier, 0);
+                  const isLastWinner = allWinners.length >= serverWinners.length;
+
+                  if (isLastWinner) {
+                    redirectToResults();
                   } else {
-                    setPhase('selecting');
+                    setSelectedWinnerId(null);
+                    revealWinner(serverWinners, allWinners.length);
                   }
                 }}
-                width="full"
-                size="lg"
+                className="mt-8 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(37,99,235,0.18)] transition hover:bg-blue-700"
               >
-                {winnersThisTier >= currentTier.winnerCount ? '➜ Next Tier' : '➜ Next Pick'}
-              </Button>
+                {allWinners.length >= serverWinners.length ? 'View Results' : 'Next Pick'}
+                <FaArrowRight size={13} />
+              </button>
             </div>
           </div>
         </div>

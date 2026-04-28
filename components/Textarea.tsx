@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 
 export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
@@ -8,16 +8,20 @@ export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextArea
 
 export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ label, error, helpText, className = '', ...props }, ref) => {
+    const generatedId = useId();
+    const textareaId = props.id || generatedId;
+
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+          <label htmlFor={textareaId} className="block text-sm font-medium text-gray-700 mb-2">
             {label}
             {props.required && <span className="text-red-600">*</span>}
           </label>
         )}
         <textarea
           ref={ref}
+          id={textareaId}
           className={`
             w-full px-4 py-2 border rounded-lg transition resize-none
             focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent

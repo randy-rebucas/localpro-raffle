@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserIdFromRequest } from '@/lib/auth';
-import { sendWinnerBatchEmails } from '@/lib/email';
+import { sendWinnerEmail } from '@/lib/email';
+import { generateSecureShareKey } from '@/lib/security';
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -43,16 +44,34 @@ export async function POST(
       );
     }
 
+    let share = await prisma.raffleShare.findFirst({
+      where: { raffleId: id },
+    });
+
+    if (!share) {
+      share = await prisma.raffleShare.create({
+        data: {
+          raffleId: id,
+          shareKey: generateSecureShareKey(),
+        },
+      });
+    }
+
+    const raffleUrl = `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/share/${share.shareKey}`;
+
     // Prepare email data for unsent winners
     const emailsToSend = raffle.winners
       .filter((w) => w.participant.email)
-      .map((w) => ({
-        winnerName: w.participant.name,
-        winnerEmail: w.participant.email!,
-        raffleName: raffle.title,
-        prizeName: w.tier.prizeName,
-        prizeAmount: Number(w.tier.prizeAmount),
-        raffleUrl: `${process.env.NEXTAUTH_URL}/share/${raffle.id}`, // TODO: Get actual share key
+      .map((winner) => ({
+        winnerId: winner.id,
+        email: {
+          winnerName: winner.participant.name,
+          winnerEmail: winner.participant.email!,
+          raffleName: raffle.title,
+          prizeName: winner.tier.prizeName,
+          prizeAmount: Number(winner.tier.prizeAmount),
+          raffleUrl,
+        },
       }));
 
     if (emailsToSend.length === 0) {
@@ -63,15 +82,17 @@ export async function POST(
       });
     }
 
-    // Send emails
-    const result = await sendWinnerBatchEmails(emailsToSend);
+    const results = await Promise.all(
+      emailsToSend.map(async ({ winnerId, email }) => ({
+        winnerId,
+        result: await sendWinnerEmail(email),
+      }))
+    );
+    const successfulWinnerIds = results
+      .filter(({ result }) => result.success)
+      .map(({ winnerId }) => winnerId);
 
-    // Mark emails as sent for successful sends
-    if (result.successful > 0) {
-      const successfulWinnerIds = raffle.winners
-        .slice(0, result.successful)
-        .map((w) => w.id);
-
+    if (successfulWinnerIds.length > 0) {
       await prisma.winner.updateMany({
         where: {
           id: { in: successfulWinnerIds },
@@ -82,13 +103,22 @@ export async function POST(
       });
     }
 
+    const failed = results.length - successfulWinnerIds.length;
+
     return NextResponse.json({
       success: true,
-      emailsSent: result.successful,
-      emailsFailed: result.failed,
-      message: `Sent ${result.successful} winner emails`,
+      emailsSent: successfulWinnerIds.length,
+      emailsFailed: failed,
+      message: `Sent ${successfulWinnerIds.length} winner emails`,
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
     console.error('Error sending winner emails:', error);
     return NextResponse.json(
       {

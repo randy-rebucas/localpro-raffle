@@ -2,27 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserIdFromRequest } from '@/lib/auth';
 
-// GET /api/raffles - List all raffles (or user's raffles if authenticated)
+// GET /api/raffles - List current user's raffles
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url);
     const page = parseInt(url.searchParams.get('page') || '1');
-    const limit = parseInt(url.searchParams.get('limit') || '10');
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '10'), 100);
     const skip = (page - 1) * limit;
-
-    // Try to get current user, but don't require it for backward compatibility
-    let userId: string | undefined;
-    try {
-      userId = await getCurrentUserIdFromRequest(request);
-    } catch {
-      // If not authenticated, show all raffles (or could require auth)
-    }
+    const userId = await getCurrentUserIdFromRequest(request);
 
     const [raffles, total] = await Promise.all([
       prisma.raffle.findMany({
         skip,
         take: limit,
-        where: userId ? { createdBy: userId } : undefined,
+        where: { createdBy: userId },
         orderBy: { createdAt: 'desc' },
         include: {
           tiers: {
@@ -33,7 +26,7 @@ export async function GET(request: NextRequest) {
           },
         },
       }),
-      prisma.raffle.count(userId ? { where: { createdBy: userId } } : undefined),
+      prisma.raffle.count({ where: { createdBy: userId } }),
     ]);
 
     return NextResponse.json(
@@ -49,6 +42,13 @@ export async function GET(request: NextRequest) {
       { status: 200 }
     );
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
     console.error('Error fetching raffles:', error);
     return NextResponse.json(
       { error: 'Failed to fetch raffles' },

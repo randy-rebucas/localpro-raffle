@@ -1,20 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
+import { isValidEmail, sanitizeInput } from '@/lib/security';
+import { rateLimit } from '@/lib/rate-limit';
 
 export async function POST(req: NextRequest) {
   try {
+    const rateLimitError = rateLimit(req, 'signup', 5, 15 * 60 * 1000);
+    if (rateLimitError) return rateLimitError;
+
     const { email, password, name } = await req.json();
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const normalizedName = typeof name === 'string' ? sanitizeInput(name) : '';
 
     // Validate input
-    if (!email || !password || !name) {
+    if (!normalizedEmail || !password || !normalizedName) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
-    if (password.length < 8) {
+    if (!isValidEmail(normalizedEmail)) {
+      return NextResponse.json(
+        { error: 'Enter a valid email address' },
+        { status: 400 }
+      );
+    }
+
+    if (typeof password !== 'string' || password.length < 8) {
       return NextResponse.json(
         { error: 'Password must be at least 8 characters' },
         { status: 400 }
@@ -23,12 +37,12 @@ export async function POST(req: NextRequest) {
 
     // Check if user exists
     const existingUser = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     });
 
     if (existingUser) {
       return NextResponse.json(
-        { error: 'Email already registered' },
+        { error: 'Unable to create an account with this email' },
         { status: 409 }
       );
     }
@@ -39,9 +53,9 @@ export async function POST(req: NextRequest) {
     // Create user
     const user = await prisma.user.create({
       data: {
-        email,
+        email: normalizedEmail,
         password: hashedPassword,
-        name,
+        name: normalizedName,
       },
     });
 

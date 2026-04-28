@@ -1,5 +1,13 @@
 import Papa from 'papaparse';
 
+const csvFormulaPattern = /^[=+\-@]/;
+
+export function escapeCsvCell(value: string | number | null | undefined): string {
+  const stringValue = value === null || value === undefined ? '' : String(value);
+  const safeValue = csvFormulaPattern.test(stringValue) ? `'${stringValue}` : stringValue;
+  return `"${safeValue.replace(/"/g, '""')}"`;
+}
+
 /**
  * Parse CSV text and extract participant names
  * Handles comma-separated or newline-separated names
@@ -71,13 +79,13 @@ export function generateWinnersCSV(
   // Data rows
   winners.forEach((winner) => {
     const row = [
-      raffleData.id,
-      `"${raffleData.title.replace(/"/g, '""')}"`,
-      raffleData.drawnAt.toISOString(),
-      `"${winner.participant.name.replace(/"/g, '""')}"`,
-      winner.participant.email || '',
-      `"${winner.tier.prizeName.replace(/"/g, '""')}"`,
-      winner.tier.prizeAmount.toString(),
+      escapeCsvCell(raffleData.id),
+      escapeCsvCell(raffleData.title),
+      escapeCsvCell(raffleData.drawnAt.toISOString()),
+      escapeCsvCell(winner.participant.name),
+      escapeCsvCell(winner.participant.email),
+      escapeCsvCell(winner.tier.prizeName),
+      escapeCsvCell(winner.tier.prizeAmount),
     ].join(',');
 
     csvRows.push(row);

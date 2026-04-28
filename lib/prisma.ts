@@ -6,10 +6,10 @@ const globalForPrisma = global as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-// Use absolute path matching prisma.config.ts
+// Use the same datasource resolution as prisma.config.ts.
 const dbPath = path.resolve(process.cwd(), 'prisma', 'dev.db');
 const adapter = new PrismaBetterSqlite3({
-  url: `file:${dbPath}`,
+  url: process.env.DATABASE_URL || `file:${dbPath}`,
 });
 
 export const prisma =

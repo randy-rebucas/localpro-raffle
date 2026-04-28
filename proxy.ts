@@ -3,10 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 const publicRoutes = ['/login', '/signup', '/share'];
 const authRoutes = ['/api/auth'];
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
-  // Skip middleware for auth routes and static files
+  // Skip proxy for auth routes and static files
   if (authRoutes.some((route) => pathname.startsWith(route))) {
     return NextResponse.next();
   }

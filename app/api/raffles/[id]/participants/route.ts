@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireRaffleOwnership, isValidEmail, sanitizeInput, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
@@ -66,9 +67,9 @@ export async function POST(request: NextRequest, { params }: Params) {
           },
         });
         created.push(participant);
-      } catch (error: any) {
+      } catch (error) {
         // Skip duplicate entries (unique constraint)
-        if (!error.code?.includes('P2002')) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) {
           throw error;
         }
       }

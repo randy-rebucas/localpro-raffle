@@ -12,6 +12,11 @@ export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
+    const authError = await requireRaffleOwnership(request, id);
+    if (authError) {
+      return authError;
+    }
+
     const raffle = await prisma.raffle.findUnique({
       where: { id },
       include: {

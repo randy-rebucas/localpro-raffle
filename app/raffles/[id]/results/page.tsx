@@ -1,9 +1,23 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { Button } from '@/components';
+import {
+  FaCalendarAlt,
+  FaCheck,
+  FaDownload,
+  FaGift,
+  FaHome,
+  FaPaperPlane,
+  FaPlus,
+  FaRandom,
+  FaSearch,
+  FaShareAlt,
+  FaShieldAlt,
+  FaTrophy,
+  FaUsers,
+} from 'react-icons/fa';
 
 interface WinnerByTier {
   id: string;
@@ -28,41 +42,56 @@ interface ResultsData {
   totalWinners: number;
 }
 
+interface RaffleParticipant {
+  id: string;
+  name: string;
+  email?: string;
+}
+
+interface RaffleDetails {
+  participants: RaffleParticipant[];
+}
+
 export default function RaffleResults() {
   const params = useParams();
-  const router = useRouter();
   const raffleId = params.id as string;
 
   const [results, setResults] = useState<ResultsData | null>(null);
+  const [raffleDetails, setRaffleDetails] = useState<RaffleDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [downloading, setDownloading] = useState(false);
-  const [expandedTiers, setExpandedTiers] = useState<Set<string>>(new Set());
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
   const [sharingLoading, setSharingLoading] = useState(false);
   const [sendingEmails, setSendingEmails] = useState(false);
 
-  useEffect(() => {
-    fetchResults();
-  }, [raffleId]);
-
-  const fetchResults = async () => {
+  const fetchResults = useCallback(async () => {
     try {
-      const res = await fetch(`/api/raffles/${raffleId}/winners`);
-      if (!res.ok) throw new Error('Failed to fetch results');
-      const data = await res.json();
-      setResults(data);
-      // Expand first tier by default
-      if (data.winnersByTier.length > 0) {
-        setExpandedTiers(new Set([data.winnersByTier[0].id]));
-      }
+      const [winnersRes, raffleRes] = await Promise.all([
+        fetch(`/api/raffles/${raffleId}/winners`),
+        fetch(`/api/raffles/${raffleId}`),
+      ]);
+
+      if (!winnersRes.ok || !raffleRes.ok) throw new Error('Failed to fetch results');
+
+      const [winnersData, raffleData] = await Promise.all([
+        winnersRes.json(),
+        raffleRes.json(),
+      ]);
+
+      setResults(winnersData);
+      setRaffleDetails(raffleData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
     }
-  };
+  }, [raffleId]);
+
+  useEffect(() => {
+    fetchResults();
+  }, [fetchResults]);
 
   const handleExportCSV = async () => {
     setDownloading(true);
@@ -129,22 +158,12 @@ export default function RaffleResults() {
     }
   };
 
-  const toggleTier = (tierId: string) => {
-    const newExpanded = new Set(expandedTiers);
-    if (newExpanded.has(tierId)) {
-      newExpanded.delete(tierId);
-    } else {
-      newExpanded.add(tierId);
-    }
-    setExpandedTiers(newExpanded);
-  };
-
   if (loading) {
     return (
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="animate-pulse space-y-4">
-          <div className="h-8 bg-gray-200 rounded w-1/3" />
-          <div className="h-96 bg-gray-200 rounded" />
+      <div className="flex min-h-screen items-center justify-center bg-white px-4">
+        <div className="w-full max-w-3xl animate-pulse space-y-4">
+          <div className="h-10 w-1/3 rounded bg-slate-100" />
+          <div className="h-80 rounded-xl bg-slate-100" />
         </div>
       </div>
     );
@@ -152,162 +171,319 @@ export default function RaffleResults() {
 
   if (!results) {
     return (
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="text-center text-red-600">{error || 'Results not found'}</div>
+      <div className="flex min-h-screen items-center justify-center bg-white px-4">
+        <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center text-sm font-medium text-red-700">
+          {error || 'Results not found'}
+        </div>
       </div>
     );
   }
 
+  const winnerCards = results.winnersByTier.flatMap((tier, tierIndex) =>
+    tier.winners.map((winner, winnerIndex) => ({
+      ...winner,
+      tierId: tier.id,
+      tierName: tier.prizeName,
+      prizeAmount: tier.prizeAmount,
+      place: tierIndex === 0 ? '1st Place' : tierIndex === 1 ? '2nd Place' : tierIndex === 2 ? '3rd Place' : 'Consolation Prize',
+      order: winnerIndex + 1,
+    }))
+  );
+  const participants = raffleDetails?.participants ?? winnerCards.map((winner) => ({
+    id: winner.id,
+    name: winner.name,
+    email: winner.email,
+  }));
+  const participantRows = participants.slice(0, 5);
+  const winnerByParticipant = new Map(winnerCards.map((winner) => [winner.id, winner]));
+  const drawnDate = results.raffle.drawnAt ? new Date(results.raffle.drawnAt).toLocaleString() : 'Recently completed';
+  const totalPrizes = results.winnersByTier.length;
+
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-      <Link href="/" className="inline-flex items-center text-blue-600 hover:text-blue-700 mb-6">
-        ← Back to Raffles
-      </Link>
+    <div className="min-h-screen bg-white text-slate-950">
+      <header className="border-b border-slate-100 bg-white">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <Link href="/" className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-sm">
+              <FaGift size={17} />
+            </span>
+            <span className="text-lg font-bold tracking-tight">Raffle Pro</span>
+          </Link>
 
-      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-        <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-8 py-8">
-          <h1 className="text-4xl font-bold text-white mb-2">🎉 {results.raffle.title}</h1>
-          <p className="text-green-100 text-lg">
-            Winners drawn on {new Date(results.raffle.drawnAt).toLocaleString()}
-          </p>
-        </div>
-
-        {error && (
-          <div className="m-6 p-4 bg-red-100 border border-red-300 text-red-800 rounded-lg">
-            {error}
-          </div>
-        )}
-
-        <div className="p-8">
-          {/* Summary Stats */}
-          <div className="grid grid-cols-2 gap-4 mb-8">
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg">
-              <p className="text-sm text-gray-600">Total Prize Tiers</p>
-              <p className="text-3xl font-bold text-blue-600">{results.winnersByTier.length}</p>
-            </div>
-            <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-lg">
-              <p className="text-sm text-gray-600">Total Winners</p>
-              <p className="text-3xl font-bold text-green-600">{results.totalWinners}</p>
-            </div>
-          </div>
-
-          {/* Winners by Tier */}
-          <div className="space-y-4 mb-8">
-            {results.winnersByTier.map((tier) => (
-              <div
-                key={tier.id}
-                className="border border-gray-200 rounded-lg overflow-hidden hover:shadow-md transition"
-              >
-                <button
-                  onClick={() => toggleTier(tier.id)}
-                  className="w-full flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-150 transition"
-                >
-                  <div className="text-left flex-1">
-                    <h3 className="font-semibold text-gray-900 text-lg">{tier.prizeName}</h3>
-                    <p className="text-sm text-gray-600">
-                      ₱{Number(tier.prizeAmount).toFixed(2)} × {tier.winners.length} winner{tier.winners.length !== 1 ? 's' : ''}
-                    </p>
-                  </div>
-                  <div className="text-2xl text-gray-400 ml-4">
-                    {expandedTiers.has(tier.id) ? '▼' : '▶'}
-                  </div>
-                </button>
-
-                {expandedTiers.has(tier.id) && (
-                  <div className="p-4 bg-white border-t border-gray-200 space-y-2">
-                    {tier.winners.map((winner, index) => (
-                      <div
-                        key={winner.id}
-                        className="flex items-center p-3 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-100"
-                      >
-                        <div className="flex items-center justify-center w-8 h-8 bg-green-600 text-white rounded-full font-semibold text-sm flex-shrink-0">
-                          {index + 1}
-                        </div>
-                        <div className="ml-4 flex-1">
-                          <p className="font-semibold text-gray-900">{winner.name}</p>
-                          {winner.email && (
-                            <p className="text-sm text-gray-600">{winner.email}</p>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex gap-4 justify-between pt-8 border-t border-gray-200">
-            <Link href="/">
-              <Button variant="secondary">Back to Home</Button>
+          <div className="flex items-center gap-3">
+            <Link href="/" className="hidden items-center gap-2 text-sm font-semibold text-slate-600 transition hover:text-slate-950 sm:inline-flex">
+              <FaHome size={13} />
+              Home
             </Link>
-            <div className="flex gap-4">
-              <Link href={`/raffles/${raffleId}/analytics`}>
-                <Button variant="primary">📊 Analytics</Button>
-              </Link>
-              <Button
-                onClick={handleSendWinnerEmails}
-                disabled={sendingEmails}
-                variant="warning"
-                loading={sendingEmails}
-              >
-                {sendingEmails ? 'Sending...' : '📧 Send Emails'}
-              </Button>
-              <Button
+            <Link href="/create" className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700">
+              <FaPlus size={12} />
+              New Raffle
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      <main className="min-h-[calc(100vh-4rem)]">
+        <section className="overflow-hidden">
+          <div className="relative bg-gradient-to-br from-blue-600 via-purple-600 to-indigo-700 px-4 py-10 text-white sm:px-8 lg:px-10">
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              {[
+                ['left-[62%] top-12 bg-white/20', 'h-2 w-2'],
+                ['left-[68%] top-24 bg-amber-300/80', 'h-2.5 w-2.5 rotate-45'],
+                ['right-[9%] top-16 bg-cyan-300/80', 'h-2 w-2'],
+                ['right-[18%] top-28 bg-pink-300/80', 'h-2 w-2 rotate-45'],
+              ].map(([position, size], index) => (
+                <span key={index} className={`absolute rounded-sm ${position} ${size}`} />
+              ))}
+            </div>
+
+            <div className="relative mx-auto flex max-w-6xl flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">
+                  Completed
+                </span>
+                <h1 className="mt-4 text-4xl font-bold tracking-tight">Raffle Results</h1>
+                <p className="mt-3 text-lg font-semibold text-blue-50">{results.raffle.title}</p>
+                <p className="mt-4 flex items-center gap-2 text-sm text-blue-50">
+                  <FaCalendarAlt size={14} />
+                  Draw completed on {drawnDate}
+                </p>
+              </div>
+
+              <div className="hidden h-36 w-36 items-center justify-center rounded-full bg-amber-300 text-amber-700 shadow-[0_18px_45px_rgba(15,23,42,0.25)] lg:flex">
+                <FaTrophy size={82} />
+              </div>
+            </div>
+          </div>
+
+          <div className="mx-auto -mt-8 max-w-6xl px-4 pb-10 sm:px-8 lg:px-10">
+            <div className="relative grid gap-4 rounded-xl border border-slate-100 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.10)] sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                { label: 'Total Participants', value: participants.length, icon: FaUsers, bg: 'bg-purple-50', color: 'text-purple-600' },
+                { label: 'Eligible Participants', value: participants.length, icon: FaCheck, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+                { label: 'Total Prizes', value: totalPrizes, icon: FaGift, bg: 'bg-purple-50', color: 'text-purple-600' },
+                { label: 'Draw Method', value: 'Random', icon: FaRandom, bg: 'bg-blue-50', color: 'text-blue-600' },
+              ].map((stat) => {
+                const Icon = stat.icon;
+
+                return (
+                  <div key={stat.label} className="flex items-center gap-4">
+                    <span className={`flex h-12 w-12 items-center justify-center rounded-full ${stat.bg} ${stat.color}`}>
+                      <Icon size={18} />
+                    </span>
+                    <div>
+                      <p className="text-xs text-slate-500">{stat.label}</p>
+                      <p className="mt-1 text-2xl font-bold text-slate-950">{stat.value}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {error && (
+              <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
+                {error}
+              </div>
+            )}
+
+            <div className="mt-8 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
                 onClick={handleShareResults}
                 disabled={sharingLoading}
-                variant="success"
-                loading={sharingLoading}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
               >
-                {sharingLoading ? 'Generating...' : '🔗 Share Results'}
-              </Button>
-              <Button
+                <FaShareAlt size={13} />
+                {sharingLoading ? 'Generating...' : 'Share Results'}
+              </button>
+              <button
+                type="button"
                 onClick={handleExportCSV}
                 disabled={downloading}
-                variant="primary"
-                loading={downloading}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-60"
               >
-                {downloading ? 'Exporting...' : '📥 Export CSV'}
-              </Button>
+                <FaDownload size={13} />
+                {downloading ? 'Downloading...' : 'Download Results'}
+              </button>
+              <button
+                type="button"
+                onClick={handleSendWinnerEmails}
+                disabled={sendingEmails}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              >
+                <FaPaperPlane size={13} />
+                {sendingEmails ? 'Sending...' : 'Send Emails'}
+              </button>
             </div>
-          </div>
 
-          {/* Share Modal */}
-          {showShareModal && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-              <div className="bg-white rounded-lg shadow-2xl p-6 max-w-md w-full">
-                <h3 className="text-lg font-bold mb-2">Share Raffle Results</h3>
-                <p className="text-gray-600 text-sm mb-4">
-                  Share this link to let others view the results:
-                </p>
-                <div className="flex gap-2 mb-4">
-                  <input
-                    type="text"
-                    readOnly
-                    value={shareUrl}
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-sm font-mono"
-                  />
-                  <Button
-                    onClick={copyToClipboard}
-                    variant="primary"
-                    size="sm"
-                  >
-                    📋 Copy
-                  </Button>
+            <section className="mt-8">
+              <h2 className="text-lg font-bold text-slate-950">Winners</h2>
+              <p className="mt-1 text-sm text-slate-500">Winners are drawn randomly for each prize tier.</p>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                {winnerCards.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500 xl:col-span-4">
+                    No winners found for this raffle.
+                  </div>
+                ) : (
+                  winnerCards.slice(0, 4).map((winner, index) => (
+                    <div key={`${winner.tierId}-${winner.id}-${winner.order}`} className="rounded-xl border border-slate-200 bg-white p-5 text-center shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
+                      <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-amber-600">
+                        <FaTrophy size={18} />
+                      </div>
+                      <p className="mt-3 text-sm font-bold text-slate-950">{winner.place}</p>
+                      <div className="mx-auto mt-5 flex h-24 w-28 items-center justify-center rounded-xl bg-gradient-to-br from-slate-900 to-slate-700 text-center text-white shadow-sm">
+                        <span className="text-lg font-bold">₱{Number(winner.prizeAmount).toFixed(0)}</span>
+                      </div>
+                      <p className="mt-4 text-sm font-bold text-slate-950">{winner.tierName}</p>
+                      <span className="mt-4 inline-flex h-8 w-8 items-center justify-center rounded-full bg-purple-50 text-xs font-bold text-purple-600">
+                        {winner.name.slice(0, 2).toUpperCase()}
+                      </span>
+                      <p className="mt-2 text-sm font-semibold text-slate-950">{winner.name}</p>
+                      {winner.email && <p className="mt-1 truncate text-xs text-slate-500">{winner.email}</p>}
+                      <p className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-400">Ticket ID: #{index + 241}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
+              <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-950">All Participants</h2>
+                  <p className="mt-1 text-sm text-slate-500">{participants.length} total participants</p>
                 </div>
-                <Button
-                  onClick={() => setShowShareModal(false)}
-                  variant="secondary"
-                  width="full"
-                >
-                  Close
-                </Button>
+                <div className="flex gap-3">
+                  <div className="relative">
+                    <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
+                    <input
+                      type="text"
+                      placeholder="Search participants..."
+                      className="h-10 w-56 rounded-lg border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleExportCSV}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-blue-600 transition hover:bg-blue-50"
+                  >
+                    <FaDownload size={12} />
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-slate-100">
+                <table className="w-full min-w-[760px] text-left text-sm">
+                  <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">#</th>
+                      <th className="px-4 py-3">Participant</th>
+                      <th className="px-4 py-3">Email</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Entries</th>
+                      <th className="px-4 py-3">Ticket ID</th>
+                      <th className="px-4 py-3">Joined At</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {participantRows.map((participant, index) => {
+                      const winner = winnerByParticipant.get(participant.id);
+
+                      return (
+                        <tr key={participant.id}>
+                          <td className="px-4 py-3 text-slate-500">{index + 1}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-50 text-xs font-bold text-blue-600">
+                                {participant.name.slice(0, 2).toUpperCase()}
+                              </span>
+                              <span className="font-semibold text-slate-950">{participant.name}</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{participant.email || '—'}</td>
+                          <td className="px-4 py-3">
+                            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${winner ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                              {winner ? 'Winner' : 'Eligible'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{index + 1}</td>
+                          <td className="px-4 py-3 text-slate-600">#{index + 241}</td>
+                          <td className="px-4 py-3 text-slate-600">Recently added</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
+                <span>Showing {participantRows.length} of {participants.length} participants</span>
+                <div className="flex items-center gap-2">
+                  {[1, 2, 3].map((page) => (
+                    <button key={page} type="button" className={`flex h-8 w-8 items-center justify-center rounded-lg border text-xs font-semibold ${page === 1 ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500'}`}>
+                      {page}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <div className="mt-6 rounded-xl border border-blue-100 bg-blue-50 p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-bold text-slate-950">Draw completed successfully!</p>
+                  <p className="mt-1 text-sm text-slate-600">Thank you for using Raffle Pro. We hope your giveaway was a success.</p>
+                </div>
+                <Link href="/create" className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-4 text-sm font-semibold text-blue-600 transition hover:bg-blue-50">
+                  <FaPlus size={12} />
+                  Create Another Raffle
+                </Link>
               </div>
             </div>
-          )}
+
+            <div className="mt-8 text-center text-slate-500">
+              <div className="flex items-center justify-center gap-2 text-sm font-bold text-slate-700">
+                <FaShieldAlt size={16} />
+                Fair. Random. Transparent.
+              </div>
+              <p className="mt-2 text-xs">All draws are conducted securely and fairly using a certified random selection process.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <div role="dialog" aria-modal="true" aria-labelledby="share-results-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 id="share-results-title" className="text-lg font-bold text-slate-950">Share Raffle Results</h3>
+            <p className="mt-2 text-sm text-slate-500">Share this link to let others view the results.</p>
+            <div className="mt-5 flex gap-2">
+              <input
+                type="text"
+                readOnly
+                value={shareUrl}
+                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono text-slate-700"
+              />
+              <button
+                type="button"
+                onClick={copyToClipboard}
+                className="inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                Copy
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowShareModal(false)}
+              className="mt-4 inline-flex h-10 w-full items-center justify-center rounded-lg border border-slate-200 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              Close
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -41,11 +41,11 @@ export async function GET(request: NextRequest, { params }: Params) {
     }
 
     // Group winners by tier
-    const winnersByTier = raffle.tiers.map((tier: any) => ({
+    const winnersByTier = raffle.tiers.map((tier) => ({
       ...tier,
       winners: raffle.winners
-        .filter((w: any) => w.tierId === tier.id)
-        .map((w: any) => ({
+        .filter((w) => w.tierId === tier.id)
+        .map((w) => ({
           id: w.participant.id,
           name: w.participant.name,
           email: w.participant.email,

@@ -142,7 +142,7 @@ export async function logSecurityEvent(
   userId: string,
   action: string,
   raffleId?: string,
-  details?: Record<string, any>
+  details?: Record<string, unknown>
 ) {
   try {
     // Note: You may want to store these in a dedicated audit log table

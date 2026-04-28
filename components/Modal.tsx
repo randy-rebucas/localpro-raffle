@@ -1,6 +1,6 @@
 'use client';
 
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useEffect, useId } from 'react';
 
 export interface ModalProps {
   isOpen: boolean;
@@ -28,6 +28,21 @@ export const Modal: React.FC<ModalProps> = ({
   size = 'md',
   closeOnBackdropClick = true,
 }) => {
+  const titleId = useId();
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
@@ -39,11 +54,16 @@ export const Modal: React.FC<ModalProps> = ({
         }
       }}
     >
-      <div className={`bg-white rounded-lg shadow-2xl w-full ${sizeClasses[size]} transform transition-all`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        className={`bg-white rounded-lg shadow-2xl w-full ${sizeClasses[size]} transform transition-all`}
+      >
         {/* Header */}
         {title && (
           <div className="flex items-center justify-between p-6 border-b border-gray-200">
-            <h2 className="text-xl font-bold text-gray-900">{title}</h2>
+            <h2 id={titleId} className="text-xl font-bold text-gray-900">{title}</h2>
             <button
               onClick={onClose}
               className="text-gray-500 hover:text-gray-700 transition text-2xl leading-none"

@@ -4,6 +4,11 @@ import { drawWinners } from '@/utils/drawing';
 import { requireRaffleOwnership, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
 
+const publicDrawErrors = new Map([
+  ['RAFFLE_ALREADY_DRAWN', 'Raffle has already been drawn'],
+  ['RAFFLE_NOT_FOUND', 'Raffle not found'],
+]);
+
 interface Params {
   params: Promise<{ id: string }>;
 }
@@ -63,60 +68,74 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     // Execute drawing algorithm
     const drawResult = drawWinners({
-      participants: raffle.participants.map((p: any) => ({
+      participants: raffle.participants.map((p) => ({
         id: p.id,
         name: p.name,
       })),
-      tiers: raffle.tiers.map((t: any) => ({
+      tiers: raffle.tiers.map((t) => ({
         id: t.id,
         prizeName: t.prizeName,
         winnerCount: t.winnerCount,
       })),
     });
 
+    const totalWinners = drawResult.reduce((sum, tier) => sum + tier.winners.length, 0);
     const user = await getSessionUser(request);
-    logSecurityEvent(user?.id || 'unknown', 'DRAW_EXECUTED', id, { 
-      totalWinners: drawResult.reduce((sum: number, t: any) => sum + t.winners.length, 0) 
-    });
+    logSecurityEvent(user?.id || 'unknown', 'DRAW_EXECUTED', id, { totalWinners });
 
-    // Create winner records
-    const winners = [];
-    for (const tierResult of drawResult) {
-      for (const winner of tierResult.winners) {
-        const winnerRecord = await prisma.winner.create({
-          data: {
-            raffleId: id,
-            tierId: tierResult.tierId,
-            participantId: winner.participantId,
-          },
-          include: {
-            tier: true,
-            participant: true,
-          },
-        });
-        winners.push(winnerRecord);
+    const { updatedRaffle, winners } = await prisma.$transaction(async (tx) => {
+      const currentRaffle = await tx.raffle.findUnique({
+        where: { id },
+        select: { status: true },
+      });
+
+      if (!currentRaffle) {
+        throw new Error('RAFFLE_NOT_FOUND');
       }
-    }
 
-    // Update raffle status
-    const updatedRaffle = await prisma.raffle.update({
-      where: { id },
-      data: {
-        status: 'DRAWN',
-        drawnAt: new Date(),
-      },
-      include: {
-        tiers: {
-          orderBy: { tierOrder: 'asc' },
+      if (currentRaffle.status === 'DRAWN') {
+        throw new Error('RAFFLE_ALREADY_DRAWN');
+      }
+
+      const winnerRecords = [];
+      for (const tierResult of drawResult) {
+        for (const winner of tierResult.winners) {
+          const winnerRecord = await tx.winner.create({
+            data: {
+              raffleId: id,
+              tierId: tierResult.tierId,
+              participantId: winner.participantId,
+            },
+            include: {
+              tier: true,
+              participant: true,
+            },
+          });
+          winnerRecords.push(winnerRecord);
+        }
+      }
+
+      const drawnRaffle = await tx.raffle.update({
+        where: { id },
+        data: {
+          status: 'DRAWN',
+          drawnAt: new Date(),
         },
-        winners: {
-          include: {
-            participant: true,
-            tier: true,
+        include: {
+          tiers: {
+            orderBy: { tierOrder: 'asc' },
           },
-          orderBy: [{ tier: { tierOrder: 'asc' } }, { drawnAt: 'asc' }],
+          winners: {
+            include: {
+              participant: true,
+              tier: true,
+            },
+            orderBy: [{ tier: { tierOrder: 'asc' } }, { drawnAt: 'asc' }],
+          },
         },
-      },
+      });
+
+      return { updatedRaffle: drawnRaffle, winners: winnerRecords };
     });
 
     return NextResponse.json({
@@ -124,11 +143,14 @@ export async function POST(request: NextRequest, { params }: Params) {
       raffle: updatedRaffle,
       winners,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error drawing raffle:', error);
+    const message = error instanceof Error ? error.message : '';
+    const publicMessage = publicDrawErrors.get(message);
+
     return NextResponse.json(
-      { error: error.message || 'Failed to draw raffle' },
-      { status: 500 }
+      { error: publicMessage || 'Failed to draw raffle' },
+      { status: publicMessage ? 400 : 500 }
     );
   }
 }

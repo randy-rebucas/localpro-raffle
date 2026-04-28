@@ -4,6 +4,27 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 
+const invalidCredentialsMessage = "Invalid email or password";
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function isLoginRateLimited(email: string) {
+  const now = Date.now();
+  const key = email || "unknown";
+  const current = loginAttempts.get(key);
+
+  if (!current || current.resetAt <= now) {
+    loginAttempts.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 });
+    return false;
+  }
+
+  current.count += 1;
+  return current.count > 10;
+}
+
+function clearLoginAttempts(email: string) {
+  loginAttempts.delete(email || "unknown");
+}
+
 declare module "next-auth" {
   interface Session {
     user: {
@@ -12,6 +33,12 @@ declare module "next-auth" {
       email?: string | null;
       image?: string | null;
     };
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    id?: string;
   }
 }
 
@@ -25,30 +52,35 @@ const handler = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
-          throw new Error("Invalid credentials");
+        const email = credentials?.email?.trim().toLowerCase();
+        const password = credentials?.password;
+
+        if (!email || !password) {
+          throw new Error(invalidCredentialsMessage);
+        }
+
+        if (isLoginRateLimited(email)) {
+          throw new Error("Too many login attempts. Please try again later.");
         }
 
         const user = await prisma.user.findUnique({
-          where: { email: credentials.email as string },
+          where: { email },
         });
 
-        if (!user) {
-          throw new Error("User not found");
-        }
-
-        if (!user.password) {
-          throw new Error("User was created with OAuth, use that provider");
+        if (!user?.password) {
+          throw new Error(invalidCredentialsMessage);
         }
 
         const isPasswordValid = await bcrypt.compare(
-          credentials.password as string,
+          password,
           user.password
         );
 
         if (!isPasswordValid) {
-          throw new Error("Invalid password");
+          throw new Error(invalidCredentialsMessage);
         }
+
+        clearLoginAttempts(email);
 
         return {
           id: user.id,
@@ -61,7 +93,7 @@ const handler = NextAuth({
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.id = (user as any).id;
+        token.id = user.id;
       }
       return token;
     },

@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { rateLimit } from '@/lib/rate-limit';
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ key: string }> }
 ) {
   try {
+    const rateLimitError = rateLimit(req, 'share-results', 120, 60 * 60 * 1000);
+    if (rateLimitError) return rateLimitError;
+
     const { key } = await params;
 
     // Find the share record
