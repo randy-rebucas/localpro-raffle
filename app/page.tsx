@@ -6,7 +6,6 @@ import { Badge } from '@/components';
 import {
   FaChartBar,
   FaChevronDown,
-  FaClipboardList,
   FaEllipsisV,
   FaGem,
   FaGift,

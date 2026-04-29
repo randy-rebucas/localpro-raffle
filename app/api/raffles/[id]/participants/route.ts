@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Prisma } from '@prisma/client';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, Participant } from '@/lib/db';
+import { isDuplicateKeyError } from '@/lib/mongo-errors';
 import { requireRaffleOwnership, isValidEmail, sanitizeInput, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
 
@@ -8,12 +9,16 @@ interface Params {
   params: Promise<{ id: string }>;
 }
 
+function participantEmailKey(email: string | null | undefined) {
+  if (!email) return '__none__';
+  return email.trim().toLowerCase();
+}
+
 // POST /api/raffles/[id]/participants - Add participants (single or bulk)
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -22,7 +27,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const body = await request.json();
-    const { participants } = body; // Array of { name, email? }
+    const { participants } = body;
 
     if (!Array.isArray(participants) || participants.length === 0) {
       return NextResponse.json(
@@ -38,7 +43,6 @@ export async function POST(request: NextRequest, { params }: Params) {
       );
     }
 
-    // SECURITY: Validate each participant
     const validParticipants = participants.filter((p) => {
       if (typeof p.name !== 'string' || !p.name.trim()) return false;
       if (p.email && !isValidEmail(p.email)) return false;
@@ -55,23 +59,37 @@ export async function POST(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'PARTICIPANTS_ADDED', id, { count: validParticipants.length });
 
-    // Create participants, handling duplicates
+    await connectDb();
     const created = [];
+
     for (const p of validParticipants) {
+      const name = sanitizeInput(p.name);
+      const email = p.email ? sanitizeInput(p.email) : null;
+      const emailKey = participantEmailKey(email);
+      const now = new Date();
+
       try {
-        const participant = await prisma.participant.create({
-          data: {
-            raffleId: id,
-            name: sanitizeInput(p.name),
-            email: p.email ? sanitizeInput(p.email) : null,
-          },
+        const participantId = randomUUID();
+        await Participant.create({
+          id: participantId,
+          raffleId: id,
+          name,
+          email,
+          emailKey,
+          addedAt: now,
         });
-        created.push(participant);
+        created.push({
+          id: participantId,
+          raffleId: id,
+          name,
+          email,
+          addedAt: now,
+        });
       } catch (error) {
-        // Skip duplicate entries (unique constraint)
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) {
-          throw error;
+        if (isDuplicateKeyError(error)) {
+          continue;
         }
+        throw error;
       }
     }
 
@@ -97,7 +115,6 @@ export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       return authError;
@@ -105,17 +122,18 @@ export async function GET(request: NextRequest, { params }: Params) {
 
     const url = new URL(request.url);
     const page = parseInt(url.searchParams.get('page') || '1');
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 500); // Cap at 500
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 500);
     const skip = (page - 1) * limit;
 
+    await connectDb();
+
     const [participants, total] = await Promise.all([
-      prisma.participant.findMany({
-        where: { raffleId: id },
-        skip,
-        take: limit,
-        orderBy: { addedAt: 'asc' },
-      }),
-      prisma.participant.count({ where: { raffleId: id } }),
+      Participant.find({ raffleId: id })
+        .sort({ addedAt: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Participant.countDocuments({ raffleId: id }),
     ]);
 
     return NextResponse.json({
@@ -141,7 +159,6 @@ export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -162,9 +179,18 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'PARTICIPANT_DELETED', id, { participantId });
 
-    await prisma.participant.delete({
-      where: { id: participantId, raffleId: id },
+    await connectDb();
+    const deleteResult = await Participant.deleteOne({
+      id: participantId,
+      raffleId: id,
     });
+
+    if (deleteResult.deletedCount === 0) {
+      return NextResponse.json(
+        { error: 'Participant not found' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

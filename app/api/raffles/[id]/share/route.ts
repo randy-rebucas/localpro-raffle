@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, RaffleShare } from '@/lib/db';
+import { isDuplicateKeyError } from '@/lib/mongo-errors';
 import { requireRaffleOwnership, generateSecureShareKey, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
 
@@ -10,7 +12,6 @@ export async function POST(
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(req, id);
     if (authError) {
       const user = await getSessionUser(req);
@@ -26,27 +27,49 @@ export async function POST(
       );
     }
 
-    // Find or create a share link
-    let share = await prisma.raffleShare.findFirst({
-      where: { raffleId: id },
-    });
+    await connectDb();
 
-    if (!share) {
-      // SECURITY: Use cryptographically secure key generation
-      share = await prisma.raffleShare.create({
-        data: {
-          raffleId: id,
-          shareKey: generateSecureShareKey(),
-        },
-      });
+    const existingShare = await RaffleShare.findOne({ raffleId: id }).lean();
+    let shareKey =
+      existingShare && typeof existingShare.shareKey === 'string' ? existingShare.shareKey : undefined;
 
-      logSecurityEvent(user.id, 'SHARE_LINK_CREATED', id);
+    if (!shareKey) {
+      const now = new Date();
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const nextShareKey = generateSecureShareKey();
+        const shareId = randomUUID();
+
+        try {
+          await RaffleShare.create({
+            id: shareId,
+            raffleId: id,
+            shareKey: nextShareKey,
+            createdAt: now,
+          });
+          shareKey = nextShareKey;
+          logSecurityEvent(user.id, 'SHARE_LINK_CREATED', id);
+          break;
+        } catch (error) {
+          if (isDuplicateKeyError(error)) {
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      if (!shareKey) {
+        return NextResponse.json(
+          { error: 'Failed to create share link' },
+          { status: 500 }
+        );
+      }
     }
 
-    const shareUrl = `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/share/${share.shareKey}`;
+    const shareUrl = `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/share/${shareKey}`;
 
     return NextResponse.json({
-      shareKey: share.shareKey,
+      shareKey,
       shareUrl,
     });
   } catch (error) {

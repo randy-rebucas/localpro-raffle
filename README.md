@@ -1,6 +1,6 @@
 # 🎉 LocalPro Raffle System
 
-A modern, gamified raffle application built with Next.js, React, Tailwind CSS, and Prisma. Perfect for organizing and managing raffles with multiple prize tiers, public result sharing, and email notifications.
+A modern, gamified raffle application built with Next.js, React, Tailwind CSS, and MongoDB. Perfect for organizing and managing raffles with multiple prize tiers, public result sharing, and email notifications.
 
 ## ✨ Features
 
@@ -60,8 +60,8 @@ A modern, gamified raffle application built with Next.js, React, Tailwind CSS, a
 ## 🛠️ Tech Stack
 
 - **Framework**: Next.js 16.2.3 with Turbopack
-- **UI**: React 18 with Tailwind CSS 3
-- **Database**: SQLite with Prisma ORM
+- **UI**: React with Tailwind CSS 4
+- **Database**: MongoDB with Mongoose
 - **Authentication**: NextAuth.js v4.24.13
 - **Email**: Resend API
 - **Password Hashing**: bcryptjs
@@ -71,7 +71,7 @@ A modern, gamified raffle application built with Next.js, React, Tailwind CSS, a
 
 - Node.js 18+ 
 - npm or yarn
-- SQLite 3 (included with Prisma)
+- MongoDB 6+ (local install or MongoDB Atlas)
 
 ## 🚀 Quick Start
 
@@ -84,9 +84,6 @@ cd localpro-raffle
 
 # Install dependencies
 npm install
-
-# Generate Prisma client
-npx prisma generate
 ```
 
 ### 2. Environment Setup
@@ -97,6 +94,10 @@ Create `.env.local` file in the project root:
 # NextAuth Configuration
 NEXTAUTH_SECRET=generate_a_random_string_here
 NEXTAUTH_URL=http://localhost:3000
+
+# MongoDB connection string (Atlas SRV or local mongodb://...)
+# If omitted, the app defaults to mongodb://127.0.0.1:27017/localpro-raffle
+DATABASE_URL=mongodb://127.0.0.1:27017/localpro-raffle
 
 # Email Service (Optional - for winner notifications)
 RESEND_API_KEY=your_resend_api_key_here
@@ -110,13 +111,7 @@ openssl rand -base64 32
 
 ### 3. Database Setup
 
-```bash
-# Apply Prisma migrations
-npx prisma db push
-
-# (Optional) View database with Prisma Studio
-npx prisma studio
-```
+Ensure MongoDB is reachable using `DATABASE_URL` (see `.env.local` above). On first run, the app creates recommended indexes automatically.
 
 ### 4. Create Demo User (Optional)
 
@@ -322,13 +317,9 @@ npm run dev -- -p 3001
 ```
 
 ### Database connection issues
-```bash
-# Reset database (removes all data)
-npx prisma db push --force-reset
-
-# Verify database schema
-npx prisma db validate
-```
+- Verify MongoDB is running (local) or that your Atlas cluster allows connections from your IP
+- Confirm `DATABASE_URL` in `.env.local` is correct (SRV strings must include credentials if required)
+- Watch the server logs on first request for index creation errors (usually permissions-related on managed clusters)
 
 ### Email not sending
 - Verify `RESEND_API_KEY` is set in `.env.local`
@@ -336,11 +327,8 @@ npx prisma db validate
 - Allow 5-10 seconds for Resend API to deliver
 - Check browser console for any error messages
 
-### Prisma type errors
+### TypeScript / build issues after dependency changes
 ```bash
-# Regenerate Prisma client
-npx prisma generate
-
 # Clear Next.js cache
 rm -rf .next
 

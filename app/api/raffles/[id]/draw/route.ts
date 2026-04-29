@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, Participant, Raffle, Tier, Winner } from '@/lib/db';
 import { drawWinners } from '@/utils/drawing';
 import { requireRaffleOwnership, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
@@ -13,12 +14,56 @@ interface Params {
   params: Promise<{ id: string }>;
 }
 
+type ParticipantDoc = { id: string; name: string; email?: string | null };
+type TierDoc = { id: string; prizeName: string; prizeAmount?: number; winnerCount: number; tierOrder: number };
+type WinnerDoc = {
+  id: string;
+  raffleId: string;
+  tierId: string;
+  participantId: string;
+  drawnAt: Date;
+  emailSent: boolean;
+};
+
+function shapeWinnerRecord(
+  winner: WinnerDoc,
+  participantsById: Map<string, ParticipantDoc>,
+  tiersById: Map<string, TierDoc>
+) {
+  const participant = participantsById.get(winner.participantId);
+  const tier = tiersById.get(winner.tierId);
+
+  if (!participant || !tier) {
+    return null;
+  }
+
+  return {
+    id: winner.id,
+    raffleId: winner.raffleId,
+    tierId: winner.tierId,
+    participantId: winner.participantId,
+    drawnAt: winner.drawnAt,
+    emailSent: winner.emailSent,
+    participant: {
+      id: participant.id,
+      name: participant.name,
+      email: participant.email ?? null,
+    },
+    tier: {
+      id: tier.id,
+      prizeName: tier.prizeName,
+      prizeAmount: tier.prizeAmount ?? 0,
+      winnerCount: tier.winnerCount,
+      tierOrder: tier.tierOrder,
+    },
+  };
+}
+
 // POST /api/raffles/[id]/draw - Execute raffle draw
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -26,17 +71,14 @@ export async function POST(request: NextRequest, { params }: Params) {
       return authError;
     }
 
-    // Fetch raffle with tiers and participants
-    const raffle = await prisma.raffle.findUnique({
-      where: { id },
-      include: {
-        tiers: {
-          orderBy: { tierOrder: 'asc' },
-        },
-        participants: true,
-        winners: true,
-      },
-    });
+    await connectDb();
+
+    const [raffle, tiers, participants, existingWinners] = await Promise.all([
+      Raffle.findOne({ id }).lean(),
+      Tier.find({ raffleId: id }).sort({ tierOrder: 1 }).lean() as unknown as TierDoc[],
+      Participant.find({ raffleId: id }).lean() as unknown as ParticipantDoc[],
+      Winner.find({ raffleId: id }).lean() as unknown as WinnerDoc[],
+    ]);
 
     if (!raffle) {
       return NextResponse.json(
@@ -45,34 +87,33 @@ export async function POST(request: NextRequest, { params }: Params) {
       );
     }
 
-    if (raffle.status === 'DRAWN') {
+    if (raffle.status === 'DRAWN' || existingWinners.length > 0) {
       return NextResponse.json(
         { error: 'Raffle has already been drawn' },
         { status: 400 }
       );
     }
 
-    if (raffle.tiers.length === 0) {
+    if (tiers.length === 0) {
       return NextResponse.json(
         { error: 'No tiers defined for this raffle' },
         { status: 400 }
       );
     }
 
-    if (raffle.participants.length === 0) {
+    if (participants.length === 0) {
       return NextResponse.json(
         { error: 'No participants in this raffle' },
         { status: 400 }
       );
     }
 
-    // Execute drawing algorithm
     const drawResult = drawWinners({
-      participants: raffle.participants.map((p) => ({
+      participants: participants.map((p) => ({
         id: p.id,
         name: p.name,
       })),
-      tiers: raffle.tiers.map((t) => ({
+      tiers: tiers.map((t) => ({
         id: t.id,
         prizeName: t.prizeName,
         winnerCount: t.winnerCount,
@@ -83,64 +124,83 @@ export async function POST(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'DRAW_EXECUTED', id, { totalWinners });
 
-    const { updatedRaffle, winners } = await prisma.$transaction(async (tx) => {
-      const currentRaffle = await tx.raffle.findUnique({
-        where: { id },
-        select: { status: true },
-      });
+    const drawnAt = new Date();
 
-      if (!currentRaffle) {
+    const lockResult = await Raffle.findOneAndUpdate(
+      { id, status: { $ne: 'DRAWN' } },
+      { $set: { status: 'DRAWN', drawnAt } },
+      { new: true, lean: true }
+    );
+
+    if (!lockResult) {
+      const current = await Raffle.findOne({ id }).select('status').lean();
+      if (!current) {
         throw new Error('RAFFLE_NOT_FOUND');
       }
-
-      if (currentRaffle.status === 'DRAWN') {
+      if (current.status === 'DRAWN') {
         throw new Error('RAFFLE_ALREADY_DRAWN');
       }
+      throw new Error('RAFFLE_NOT_FOUND');
+    }
 
-      const winnerRecords = [];
+    const insertedWinnerIds: string[] = [];
+
+    try {
       for (const tierResult of drawResult) {
         for (const winner of tierResult.winners) {
-          const winnerRecord = await tx.winner.create({
-            data: {
-              raffleId: id,
-              tierId: tierResult.tierId,
-              participantId: winner.participantId,
-            },
-            include: {
-              tier: true,
-              participant: true,
-            },
+          const winnerId = randomUUID();
+          await Winner.create({
+            id: winnerId,
+            raffleId: id,
+            tierId: tierResult.tierId,
+            participantId: winner.participantId,
+            drawnAt,
+            emailSent: false,
           });
-          winnerRecords.push(winnerRecord);
+          insertedWinnerIds.push(winnerId);
         }
       }
+    } catch (error) {
+      if (insertedWinnerIds.length > 0) {
+        await Winner.deleteMany({ id: { $in: insertedWinnerIds } });
+      }
 
-      const drawnRaffle = await tx.raffle.update({
-        where: { id },
-        data: {
-          status: 'DRAWN',
-          drawnAt: new Date(),
-        },
-        include: {
-          tiers: {
-            orderBy: { tierOrder: 'asc' },
-          },
-          winners: {
-            include: {
-              participant: true,
-              tier: true,
-            },
-            orderBy: [{ tier: { tierOrder: 'asc' } }, { drawnAt: 'asc' }],
-          },
-        },
-      });
+      await Raffle.updateOne(
+        { id },
+        { $set: { status: raffle.status, drawnAt: raffle.drawnAt ?? null } }
+      );
 
-      return { updatedRaffle: drawnRaffle, winners: winnerRecords };
+      throw error;
+    }
+
+    const [updatedRaffle, winnerDocs] = await Promise.all([
+      Raffle.findOne({ id }).lean(),
+      Winner.find({ raffleId: id }).lean() as unknown as WinnerDoc[],
+    ]);
+
+    const participantsById = new Map(participants.map((p) => [p.id, p]));
+    const tiersById = new Map(tiers.map((t) => [t.id, t]));
+
+    const winners = winnerDocs
+      .map((w) => shapeWinnerRecord(w, participantsById, tiersById))
+      .filter(Boolean) as NonNullable<ReturnType<typeof shapeWinnerRecord>>[];
+
+    winners.sort((a, b) => {
+      const tierOrderA = a.tier.tierOrder;
+      const tierOrderB = b.tier.tierOrder;
+      if (tierOrderA !== tierOrderB) return tierOrderA - tierOrderB;
+      return new Date(a.drawnAt).getTime() - new Date(b.drawnAt).getTime();
     });
+
+    const shapedRaffle = {
+      ...updatedRaffle,
+      tiers,
+      winners,
+    };
 
     return NextResponse.json({
       success: true,
-      raffle: updatedRaffle,
+      raffle: shapedRaffle,
       winners,
     });
   } catch (error) {
@@ -160,20 +220,18 @@ export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       return authError;
     }
 
-    const winners = await prisma.winner.findMany({
-      where: { raffleId: id },
-      include: {
-        participant: true,
-        tier: true,
-      },
-      orderBy: [{ tier: { tierOrder: 'asc' } }, { drawnAt: 'asc' }],
-    });
+    await connectDb();
+
+    const [winners, participants, tiers] = await Promise.all([
+      Winner.find({ raffleId: id }).lean() as unknown as WinnerDoc[],
+      Participant.find({ raffleId: id }).lean() as unknown as ParticipantDoc[],
+      Tier.find({ raffleId: id }).sort({ tierOrder: 1 }).lean() as unknown as TierDoc[],
+    ]);
 
     if (winners.length === 0) {
       return NextResponse.json(
@@ -182,7 +240,21 @@ export async function GET(request: NextRequest, { params }: Params) {
       );
     }
 
-    return NextResponse.json({ winners });
+    const participantsById = new Map(participants.map((p) => [p.id, p]));
+    const tiersById = new Map(tiers.map((t) => [t.id, t]));
+
+    const shaped = winners
+      .map((w) => shapeWinnerRecord(w, participantsById, tiersById))
+      .filter(Boolean) as NonNullable<ReturnType<typeof shapeWinnerRecord>>[];
+
+    shaped.sort((a, b) => {
+      const tierOrderA = a.tier.tierOrder;
+      const tierOrderB = b.tier.tierOrder;
+      if (tierOrderA !== tierOrderB) return tierOrderA - tierOrderB;
+      return new Date(a.drawnAt).getTime() - new Date(b.drawnAt).getTime();
+    });
+
+    return NextResponse.json({ winners: shaped });
   } catch (error) {
     console.error('Error fetching draw results:', error);
     return NextResponse.json(

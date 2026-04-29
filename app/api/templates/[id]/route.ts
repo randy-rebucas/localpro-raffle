@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { connectDb, Template } from '@/lib/db';
 import { getCurrentUserIdFromRequest } from '@/lib/auth';
 import { isValidPrizeAmount, isValidWinnerCount, sanitizeInput } from '@/lib/security';
 
@@ -72,9 +72,8 @@ export async function GET(
     const userId = await getCurrentUserIdFromRequest(req);
     const { id } = await params;
 
-    const template = await prisma.template.findUnique({
-      where: { id },
-    });
+    await connectDb();
+    const template = await Template.findOne({ id }).lean();
 
     if (!template) {
       return NextResponse.json(
@@ -92,7 +91,7 @@ export async function GET(
 
     return NextResponse.json({
       ...template,
-      tiers: JSON.parse(template.tiers),
+      tiers: JSON.parse(String(template.tiers)),
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'Unauthorized') {
@@ -128,9 +127,8 @@ export async function PUT(
       );
     }
 
-    const template = await prisma.template.findUnique({
-      where: { id },
-    });
+    await connectDb();
+    const template = await Template.findOne({ id }).lean();
 
     if (!template) {
       return NextResponse.json(
@@ -146,18 +144,33 @@ export async function PUT(
       );
     }
 
-    const updated = await prisma.template.update({
-      where: { id },
-      data: {
-        name: validation.value.name ?? template.name,
-        description: validation.value.description ?? template.description,
-        tiers: validation.value.tiers ? JSON.stringify(validation.value.tiers) : template.tiers,
-      },
-    });
+    const now = new Date();
+    const $set: Record<string, unknown> = { updatedAt: now };
+
+    if (validation.value.name !== undefined) {
+      $set.name = validation.value.name;
+    }
+
+    if (validation.value.description !== undefined) {
+      $set.description = validation.value.description;
+    }
+
+    if (validation.value.tiers) {
+      $set.tiers = JSON.stringify(validation.value.tiers);
+    }
+
+    const updated = await Template.findOneAndUpdate({ id }, { $set }, { new: true, lean: true });
+
+    if (!updated) {
+      return NextResponse.json(
+        { error: 'Template not found' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({
       ...updated,
-      tiers: JSON.parse(updated.tiers),
+      tiers: JSON.parse(String(updated.tiers)),
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'Unauthorized') {
@@ -184,9 +197,8 @@ export async function DELETE(
     const userId = await getCurrentUserIdFromRequest(req);
     const { id } = await params;
 
-    const template = await prisma.template.findUnique({
-      where: { id },
-    });
+    await connectDb();
+    const template = await Template.findOne({ id }).lean();
 
     if (!template) {
       return NextResponse.json(
@@ -202,9 +214,14 @@ export async function DELETE(
       );
     }
 
-    await prisma.template.delete({
-      where: { id },
-    });
+    const deleteResult = await Template.deleteOne({ id });
+
+    if (deleteResult.deletedCount === 0) {
+      return NextResponse.json(
+        { error: 'Template not found' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

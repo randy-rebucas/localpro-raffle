@@ -1,8 +1,7 @@
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { PrismaAdapter } from "@auth/prisma-adapter";
-import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
+import { connectDb, User } from "@/lib/db";
 
 const invalidCredentialsMessage = "Invalid email or password";
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -43,7 +42,6 @@ declare module "next-auth/jwt" {
 }
 
 const handler = NextAuth({
-  adapter: PrismaAdapter(prisma),
   providers: [
     CredentialsProvider({
       name: "Credentials",
@@ -63,9 +61,8 @@ const handler = NextAuth({
           throw new Error("Too many login attempts. Please try again later.");
         }
 
-        const user = await prisma.user.findUnique({
-          where: { email },
-        });
+        await connectDb();
+        const user = await User.findOne({ email }).lean();
 
         if (!user?.password) {
           throw new Error(invalidCredentialsMessage);

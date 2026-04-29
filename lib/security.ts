@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from './auth';
-import { prisma } from './prisma';
+import { connectDb, Raffle } from './db';
 import { randomUUID } from 'crypto';
 
 /**
@@ -24,10 +24,8 @@ export async function checkRaffleOwnership(
       return null;
     }
 
-    const raffle = await prisma.raffle.findUnique({
-      where: { id: raffleId },
-      select: { createdBy: true },
-    });
+    await connectDb();
+    const raffle = await Raffle.findOne({ id: raffleId }).select('createdBy').lean();
 
     if (!raffle || raffle.createdBy !== user.id) {
       return null;

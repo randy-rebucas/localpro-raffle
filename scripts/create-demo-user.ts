@@ -1,29 +1,44 @@
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import { isDuplicateKeyError } from '../lib/mongo-errors';
+
+const defaultMongoUrl = 'mongodb://127.0.0.1:27017/localpro-raffle';
 
 async function main() {
+  const mongoUrl = process.env.DATABASE_URL || defaultMongoUrl;
+
   try {
-    // Check if demo user exists
-    const existing = await prisma.user.findUnique({
-      where: { email: 'demo@example.com' },
-    });
+    await mongoose.connect(mongoUrl);
+    const users = mongoose.connection.collection('users');
+
+    const email = 'demo@example.com';
+    const existing = await users.findOne({ email });
 
     if (existing) {
       console.log('✓ Demo user already exists');
       process.exit(0);
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash('demo123456', 10);
+    const now = new Date();
+    const userId = randomUUID();
 
-    // Create demo user
-    await prisma.user.create({
-      data: {
-        email: 'demo@example.com',
+    try {
+      await users.insertOne({
+        id: userId,
+        email,
         password: hashedPassword,
         name: 'Demo User',
-      },
-    });
+        createdAt: now,
+      });
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        console.log('✓ Demo user already exists');
+        process.exit(0);
+      }
+      throw error;
+    }
 
     console.log('✓ Demo user created successfully');
     console.log('  Email: demo@example.com');
@@ -32,8 +47,8 @@ async function main() {
     console.error('Error creating demo user:', error);
     process.exit(1);
   } finally {
-    await prisma.$disconnect();
+    await mongoose.disconnect();
   }
 }
 
-main();
+void main();

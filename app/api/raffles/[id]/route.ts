@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { connectDb, Participant, Raffle, RaffleShare, Tier, Winner } from '@/lib/db';
 import { requireRaffleOwnership, isValidRaffleTitle, sanitizeInput, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
 
@@ -17,18 +17,15 @@ export async function GET(request: NextRequest, { params }: Params) {
       return authError;
     }
 
-    const raffle = await prisma.raffle.findUnique({
-      where: { id },
-      include: {
-        tiers: {
-          orderBy: { tierOrder: 'asc' },
-        },
-        participants: true,
-        _count: {
-          select: { participants: true, winners: true },
-        },
-      },
-    });
+    await connectDb();
+
+    const [raffle, tiers, participants, participantCount, winnerCount] = await Promise.all([
+      Raffle.findOne({ id }).lean(),
+      Tier.find({ raffleId: id }).sort({ tierOrder: 1 }).lean(),
+      Participant.find({ raffleId: id }).sort({ addedAt: 1 }).lean(),
+      Participant.countDocuments({ raffleId: id }),
+      Winner.countDocuments({ raffleId: id }),
+    ]);
 
     if (!raffle) {
       return NextResponse.json(
@@ -37,7 +34,15 @@ export async function GET(request: NextRequest, { params }: Params) {
       );
     }
 
-    return NextResponse.json(raffle);
+    return NextResponse.json({
+      ...raffle,
+      tiers,
+      participants,
+      _count: {
+        participants: participantCount,
+        winners: winnerCount,
+      },
+    });
   } catch (error) {
     console.error('Error fetching raffle:', error);
     return NextResponse.json(
@@ -52,7 +57,6 @@ export async function PUT(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -63,7 +67,6 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const body = await request.json();
     const { title, description, status } = body;
 
-    // SECURITY: Validate inputs
     if (!isValidRaffleTitle(title)) {
       return NextResponse.json(
         { error: 'Invalid raffle title' },
@@ -74,21 +77,32 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'RAFFLE_UPDATED', id, { status });
 
-    const raffle = await prisma.raffle.update({
-      where: { id },
-      data: {
-        title: sanitizeInput(title),
-        description: description ? sanitizeInput(description) : null,
-        ...(status && { status }),
-      },
-      include: {
-        tiers: {
-          orderBy: { tierOrder: 'asc' },
-        },
-      },
-    });
+    await connectDb();
 
-    return NextResponse.json(raffle);
+    const update: Record<string, unknown> = {
+      title: sanitizeInput(title),
+      description: description ? sanitizeInput(description) : null,
+    };
+
+    if (status) {
+      update.status = status;
+    }
+
+    const updated = await Raffle.findOneAndUpdate({ id }, { $set: update }, { new: true, lean: true });
+
+    if (!updated) {
+      return NextResponse.json(
+        { error: 'Raffle not found' },
+        { status: 404 }
+      );
+    }
+
+    const tiers = await Tier.find({ raffleId: id }).sort({ tierOrder: 1 }).lean();
+
+    return NextResponse.json({
+      ...updated,
+      tiers,
+    });
   } catch (error) {
     console.error('Error updating raffle:', error);
     return NextResponse.json(
@@ -103,7 +117,6 @@ export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -114,9 +127,21 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'RAFFLE_DELETED', id);
 
-    await prisma.raffle.delete({
-      where: { id },
-    });
+    await connectDb();
+
+    await Winner.deleteMany({ raffleId: id });
+    await RaffleShare.deleteMany({ raffleId: id });
+    await Participant.deleteMany({ raffleId: id });
+    await Tier.deleteMany({ raffleId: id });
+
+    const deleteResult = await Raffle.deleteOne({ id });
+
+    if (deleteResult.deletedCount === 0) {
+      return NextResponse.json(
+        { error: 'Raffle not found' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

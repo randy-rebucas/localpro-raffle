@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, Participant, Raffle, Tier, Winner } from '@/lib/db';
 import { getCurrentUserIdFromRequest } from '@/lib/auth';
 
 // GET /api/raffles - List current user's raffles
@@ -11,27 +12,59 @@ export async function GET(request: NextRequest) {
     const skip = (page - 1) * limit;
     const userId = await getCurrentUserIdFromRequest(request);
 
+    await connectDb();
+
     const [raffles, total] = await Promise.all([
-      prisma.raffle.findMany({
-        skip,
-        take: limit,
-        where: { createdBy: userId },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          tiers: {
-            orderBy: { tierOrder: 'asc' },
-          },
-          _count: {
-            select: { participants: true, winners: true },
-          },
-        },
-      }),
-      prisma.raffle.count({ where: { createdBy: userId } }),
+      Raffle.find({ createdBy: userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Raffle.countDocuments({ createdBy: userId }),
     ]);
+
+    const raffleIds = raffles.map((raffle) => raffle.id as string);
+
+    const [tiers, participantCounts, winnerCounts] =
+      raffleIds.length === 0
+        ? [[], [], []]
+        : await Promise.all([
+            Tier.find({ raffleId: { $in: raffleIds } })
+              .sort({ raffleId: 1, tierOrder: 1 })
+              .lean(),
+            Participant.aggregate<{ _id: string; count: number }>([
+              { $match: { raffleId: { $in: raffleIds } } },
+              { $group: { _id: '$raffleId', count: { $sum: 1 } } },
+            ]),
+            Winner.aggregate<{ _id: string; count: number }>([
+              { $match: { raffleId: { $in: raffleIds } } },
+              { $group: { _id: '$raffleId', count: { $sum: 1 } } },
+            ]),
+          ]);
+
+    const participantCountByRaffle = new Map(participantCounts.map((row) => [row._id, row.count]));
+    const winnerCountByRaffle = new Map(winnerCounts.map((row) => [row._id, row.count]));
+
+    const tiersByRaffle = new Map<string, unknown[]>();
+    for (const tier of tiers) {
+      const raffleId = tier.raffleId as string;
+      const list = tiersByRaffle.get(raffleId) ?? [];
+      list.push(tier);
+      tiersByRaffle.set(raffleId, list);
+    }
+
+    const shapedRaffles = raffles.map((raffle) => ({
+      ...raffle,
+      tiers: tiersByRaffle.get(raffle.id as string) ?? [],
+      _count: {
+        participants: participantCountByRaffle.get(raffle.id as string) ?? 0,
+        winners: winnerCountByRaffle.get(raffle.id as string) ?? 0,
+      },
+    }));
 
     return NextResponse.json(
       {
-        data: raffles,
+        data: shapedRaffles,
         pagination: {
           page,
           limit,
@@ -70,16 +103,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get current user
     const userId = await getCurrentUserIdFromRequest(request);
 
-    const raffle = await prisma.raffle.create({
-      data: {
-        title: title.trim(),
-        description: description?.trim() || null,
-        createdBy: userId,
-      },
-    });
+    await connectDb();
+    const raffleId = randomUUID();
+    const now = new Date();
+
+    const raffle = {
+      id: raffleId,
+      title: title.trim(),
+      description: description?.trim() || null,
+      status: 'DRAFT',
+      createdAt: now,
+      drawnAt: null,
+      createdBy: userId,
+    };
+
+    await Raffle.create(raffle);
 
     return NextResponse.json(raffle, { status: 201 });
   } catch (error) {

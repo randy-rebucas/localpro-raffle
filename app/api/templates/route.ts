@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, Template } from '@/lib/db';
 import { getCurrentUserIdFromRequest } from '@/lib/auth';
 import { isValidPrizeAmount, isValidWinnerCount, sanitizeInput } from '@/lib/security';
 
@@ -52,15 +53,12 @@ export async function GET(req: NextRequest) {
   try {
     const userId = await getCurrentUserIdFromRequest(req);
 
-    const templates = await prisma.template.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
+    await connectDb();
+    const templates = await Template.find({ userId }).sort({ createdAt: -1 }).lean();
 
-    // Parse tiers JSON for response
     const templatesWithParsedTiers = templates.map((template) => ({
       ...template,
-      tiers: JSON.parse(template.tiers),
+      tiers: JSON.parse(String(template.tiers)),
     }));
 
     return NextResponse.json(templatesWithParsedTiers);
@@ -96,14 +94,21 @@ export async function POST(req: NextRequest) {
 
     const { name, description, tiers } = validation.value;
 
-    const template = await prisma.template.create({
-      data: {
-        userId,
-        name,
-        description,
-        tiers: JSON.stringify(tiers),
-      },
-    });
+    await connectDb();
+    const templateId = randomUUID();
+    const now = new Date();
+
+    const template = {
+      id: templateId,
+      userId,
+      name,
+      description: description ?? null,
+      tiers: JSON.stringify(tiers),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await Template.create(template);
 
     return NextResponse.json(
       {

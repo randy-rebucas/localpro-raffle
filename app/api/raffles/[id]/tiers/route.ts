@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, Raffle, Tier } from '@/lib/db';
 import { requireRaffleOwnership, isValidPrizeAmount, isValidWinnerCount, sanitizeInput, logSecurityEvent } from '@/lib/security';
 import { getSessionUser } from '@/lib/auth';
 
@@ -12,7 +13,6 @@ export async function POST(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -23,7 +23,6 @@ export async function POST(request: NextRequest, { params }: Params) {
     const body = await request.json();
     const { prizeName, prizeAmount, winnerCount } = body;
 
-    // SECURITY: Validate inputs
     if (!prizeName || typeof prizeName !== 'string') {
       return NextResponse.json(
         { error: 'Prize name is required' },
@@ -45,10 +44,9 @@ export async function POST(request: NextRequest, { params }: Params) {
       );
     }
 
-    // Verify raffle exists
-    const raffle = await prisma.raffle.findUnique({
-      where: { id },
-    });
+    await connectDb();
+
+    const raffle = await Raffle.findOne({ id }).lean();
 
     if (!raffle) {
       return NextResponse.json(
@@ -57,26 +55,31 @@ export async function POST(request: NextRequest, { params }: Params) {
       );
     }
 
-    // Get next tier order - find the maximum tierOrder and add 1
-    const maxTier = await prisma.tier.aggregate({
-      where: { raffleId: id },
-      _max: { tierOrder: true },
-    });
+    const lastTier = await Tier.find({ raffleId: id })
+      .sort({ tierOrder: -1 })
+      .limit(1)
+      .lean();
 
-    const tierOrder = (maxTier._max.tierOrder ?? -1) + 1;
+    const previousOrder = typeof lastTier[0]?.tierOrder === 'number' ? lastTier[0].tierOrder : -1;
+    const tierOrder = previousOrder + 1;
 
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'TIER_CREATED', id, { prizeName, winnerCount });
 
-    const tier = await prisma.tier.create({
-      data: {
-        raffleId: id,
-        prizeName: sanitizeInput(prizeName),
-        prizeAmount: parseFloat(String(prizeAmount)) || 0,
-        winnerCount,
-        tierOrder,
-      },
-    });
+    const tierId = randomUUID();
+    const now = new Date();
+
+    const tier = {
+      id: tierId,
+      raffleId: id,
+      prizeName: sanitizeInput(prizeName),
+      prizeAmount: parseFloat(String(prizeAmount)) || 0,
+      winnerCount,
+      tierOrder,
+      createdAt: now,
+    };
+
+    await Tier.create(tier);
 
     return NextResponse.json(tier, { status: 201 });
   } catch (error) {
@@ -94,7 +97,6 @@ export async function PUT(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -115,7 +117,6 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const body = await request.json();
     const { prizeName, prizeAmount, winnerCount } = body;
 
-    // SECURITY: Validate inputs
     if (prizeAmount !== undefined && !isValidPrizeAmount(prizeAmount)) {
       return NextResponse.json(
         { error: 'Prize amount must be between 0 and 999,999,999' },
@@ -133,16 +134,27 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'TIER_UPDATED', id, { tierId });
 
-    const tier = await prisma.tier.update({
-      where: { id: tierId, raffleId: id },
-      data: {
-        ...(prizeName && { prizeName: sanitizeInput(prizeName) }),
-        ...(prizeAmount !== undefined && { prizeAmount: parseFloat(String(prizeAmount)) }),
-        ...(winnerCount && { winnerCount }),
-      },
-    });
+    await connectDb();
 
-    return NextResponse.json(tier);
+    const update: Record<string, unknown> = {};
+    if (prizeName) update.prizeName = sanitizeInput(prizeName);
+    if (prizeAmount !== undefined) update.prizeAmount = parseFloat(String(prizeAmount));
+    if (winnerCount) update.winnerCount = winnerCount;
+
+    const updated = await Tier.findOneAndUpdate(
+      { id: tierId, raffleId: id },
+      { $set: update },
+      { new: true, lean: true }
+    );
+
+    if (!updated) {
+      return NextResponse.json(
+        { error: 'Tier not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(updated);
   } catch (error) {
     console.error('Error updating tier:', error);
     return NextResponse.json(
@@ -157,7 +169,6 @@ export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       const user = await getSessionUser(request);
@@ -178,9 +189,18 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     const user = await getSessionUser(request);
     logSecurityEvent(user?.id || 'unknown', 'TIER_DELETED', id, { tierId });
 
-    await prisma.tier.delete({
-      where: { id: tierId, raffleId: id },
+    await connectDb();
+    const deleteResult = await Tier.deleteOne({
+      id: tierId,
+      raffleId: id,
     });
+
+    if (deleteResult.deletedCount === 0) {
+      return NextResponse.json(
+        { error: 'Tier not found' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

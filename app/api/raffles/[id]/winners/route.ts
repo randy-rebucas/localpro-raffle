@@ -1,37 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { connectDb, Participant, Raffle, Tier, Winner } from '@/lib/db';
 import { requireRaffleOwnership } from '@/lib/security';
 
 interface Params {
   params: Promise<{ id: string }>;
 }
 
+type ParticipantDoc = { id: string; name: string; email?: string | null };
+type TierDoc = { id: string; prizeName: string; tierOrder: number };
+type WinnerDoc = {
+  id: string;
+  raffleId: string;
+  tierId: string;
+  participantId: string;
+  drawnAt: Date;
+};
+
 // GET /api/raffles/[id]/winners - Get all winners
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
 
-    // SECURITY: Verify user owns this raffle
     const authError = await requireRaffleOwnership(request, id);
     if (authError) {
       return authError;
     }
 
-    const raffle = await prisma.raffle.findUnique({
-      where: { id },
-      include: {
-        winners: {
-          include: {
-            participant: true,
-            tier: true,
-          },
-          orderBy: [{ tier: { tierOrder: 'asc' } }, { drawnAt: 'asc' }],
-        },
-        tiers: {
-          orderBy: { tierOrder: 'asc' },
-        },
-      },
-    });
+    await connectDb();
+
+    const [raffle, tiers, winners, participants] = await Promise.all([
+      Raffle.findOne({ id }).lean(),
+      Tier.find({ raffleId: id }).sort({ tierOrder: 1 }).lean() as unknown as TierDoc[],
+      Winner.find({ raffleId: id }).lean() as unknown as WinnerDoc[],
+      Participant.find({ raffleId: id }).lean() as unknown as ParticipantDoc[],
+    ]);
 
     if (!raffle) {
       return NextResponse.json(
@@ -40,17 +42,21 @@ export async function GET(request: NextRequest, { params }: Params) {
       );
     }
 
-    // Group winners by tier
-    const winnersByTier = raffle.tiers.map((tier) => ({
+    const participantsById = new Map(participants.map((p) => [p.id, p]));
+
+    const winnersByTier = tiers.map((tier) => ({
       ...tier,
-      winners: raffle.winners
+      winners: winners
         .filter((w) => w.tierId === tier.id)
-        .map((w) => ({
-          id: w.participant.id,
-          name: w.participant.name,
-          email: w.participant.email,
-          drawnAt: w.drawnAt,
-        })),
+        .map((w) => {
+          const participant = participantsById.get(w.participantId);
+          return {
+            id: participant?.id ?? w.participantId,
+            name: participant?.name ?? 'Unknown',
+            email: participant?.email ?? null,
+            drawnAt: w.drawnAt,
+          };
+        }),
     }));
 
     return NextResponse.json({
@@ -61,7 +67,7 @@ export async function GET(request: NextRequest, { params }: Params) {
         status: raffle.status,
       },
       winnersByTier,
-      totalWinners: raffle.winners.length,
+      totalWinners: winners.length,
     });
   } catch (error) {
     console.error('Error fetching winners:', error);

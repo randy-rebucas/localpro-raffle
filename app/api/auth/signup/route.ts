@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
-import { prisma } from '@/lib/prisma';
+import { randomUUID } from 'crypto';
+import { connectDb, User } from '@/lib/db';
+import { isDuplicateKeyError } from '@/lib/mongo-errors';
 import { isValidEmail, sanitizeInput } from '@/lib/security';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -35,10 +37,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Check if user exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-    });
+    await connectDb();
+
+    const existingUser = await User.findOne({ email: normalizedEmail }).lean();
 
     if (existingUser) {
       return NextResponse.json(
@@ -47,17 +48,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = randomUUID();
+    const now = new Date();
 
-    // Create user
-    const user = await prisma.user.create({
-      data: {
+    try {
+      await User.create({
+        id: userId,
         email: normalizedEmail,
         password: hashedPassword,
         name: normalizedName,
-      },
-    });
+        createdAt: now,
+      });
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        return NextResponse.json(
+          { error: 'Unable to create an account with this email' },
+          { status: 409 }
+        );
+      }
+      throw error;
+    }
+
+    const user = { id: userId, email: normalizedEmail, name: normalizedName };
 
     return NextResponse.json(
       {

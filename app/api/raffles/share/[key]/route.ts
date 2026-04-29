@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { connectDb, Participant, Raffle, RaffleShare, Tier, Winner } from '@/lib/db';
 import { rateLimit } from '@/lib/rate-limit';
+
+type TierDoc = { id: string; prizeName: string; prizeAmount?: number; tierOrder: number };
+type WinnerDoc = {
+  id: string;
+  tierId: string;
+  participantId: string;
+  drawnAt: Date;
+};
+type ParticipantDoc = { id: string; name: string };
 
 export async function GET(
   req: NextRequest,
@@ -12,59 +21,66 @@ export async function GET(
 
     const { key } = await params;
 
-    // Find the share record
-    const share = await prisma.raffleShare.findUnique({
-      where: { shareKey: key },
-      include: {
-        raffle: {
-          select: {
-            id: true,
-            title: true,
-            description: true,
-            drawnAt: true,
-          },
-        },
-      },
-    });
+    await connectDb();
 
-    if (!share || !share.raffle.drawnAt) {
+    const share = await RaffleShare.findOne({ shareKey: key }).lean();
+
+    if (!share?.raffleId) {
       return NextResponse.json(
         { error: 'Share link not found or results not available' },
         { status: 404 }
       );
     }
 
-    // Get all winners for this raffle, grouped by tier
-    const winners = await prisma.winner.findMany({
-      where: { raffleId: share.raffle.id },
-      include: {
-        tier: {
-          select: { id: true, prizeName: true, prizeAmount: true },
-        },
-        participant: {
-          select: { name: true },
-        },
-      },
-      orderBy: { tier: { tierOrder: 'asc' } },
+    const raffle = await Raffle.findOne({ id: share.raffleId })
+      .select('id title description drawnAt')
+      .lean();
+
+    if (!raffle?.drawnAt) {
+      return NextResponse.json(
+        { error: 'Share link not found or results not available' },
+        { status: 404 }
+      );
+    }
+
+    const [winners, tiers, participants] = await Promise.all([
+      Winner.find({ raffleId: raffle.id }).lean() as unknown as WinnerDoc[],
+      Tier.find({ raffleId: raffle.id }).sort({ tierOrder: 1 }).lean() as unknown as TierDoc[],
+      Participant.find({ raffleId: raffle.id }).lean() as unknown as ParticipantDoc[],
+    ]);
+
+    const participantsById = new Map(participants.map((p) => [p.id, p]));
+    const tiersById = new Map(tiers.map((t) => [t.id, t]));
+
+    const orderedWinners = [...winners].sort((a, b) => {
+      const tierA = tiersById.get(a.tierId);
+      const tierB = tiersById.get(b.tierId);
+      const orderA = tierA?.tierOrder ?? 0;
+      const orderB = tierB?.tierOrder ?? 0;
+      if (orderA !== orderB) return orderA - orderB;
+      return new Date(a.drawnAt).getTime() - new Date(b.drawnAt).getTime();
     });
 
-    // Group winners by tier
     const tierMap = new Map();
-    winners.forEach((winner) => {
-      const tierId = winner.tier.id;
+    orderedWinners.forEach((winner) => {
+      const tier = tiersById.get(winner.tierId);
+      const participant = participantsById.get(winner.participantId);
+      if (!tier || !participant) return;
+
+      const tierId = tier.id;
       if (!tierMap.has(tierId)) {
         tierMap.set(tierId, {
           id: tierId,
-          prizeName: winner.tier.prizeName,
-          prizeAmount: winner.tier.prizeAmount,
+          prizeName: tier.prizeName,
+          prizeAmount: tier.prizeAmount ?? 0,
           winners: [],
         });
       }
       tierMap.get(tierId).winners.push({
         id: winner.id,
-        participantName: winner.participant.name,
-        tierName: winner.tier.prizeName,
-        prizeAmount: winner.tier.prizeAmount,
+        participantName: participant.name,
+        tierName: tier.prizeName,
+        prizeAmount: tier.prizeAmount ?? 0,
         drawnAt: winner.drawnAt,
       });
     });
@@ -72,7 +88,7 @@ export async function GET(
     const resultsByTier = Array.from(tierMap.values());
 
     return NextResponse.json({
-      raffle: share.raffle,
+      raffle,
       resultsByTier,
       totalWinners: winners.length,
     });

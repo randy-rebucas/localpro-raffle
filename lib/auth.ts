@@ -1,15 +1,17 @@
 import { getToken } from 'next-auth/jwt';
 import { NextRequest } from 'next/server';
-import { prisma } from './prisma';
+import { connectDb, User } from './db';
 
 export async function getSessionFromRequest(req: NextRequest) {
   try {
     const token = await getToken({ req });
     if (!token?.id) return null;
-    
-    const user = await prisma.user.findUnique({
-      where: { id: token.id as string },
-    });
+
+    await connectDb();
+    const user = await User.findOne({ id: token.id as string })
+      .select('id email name password')
+      .lean();
+
     return user ? { user } : null;
   } catch (error) {
     console.error('Error getting session:', error);
@@ -30,10 +32,11 @@ export async function getSessionUser(req: NextRequest) {
   try {
     const token = await getToken({ req });
     if (!token?.id) return null;
-    
-    return await prisma.user.findUnique({
-      where: { id: token.id as string },
-    });
+
+    await connectDb();
+    return await User.findOne({ id: token.id as string })
+      .select('id email name password')
+      .lean();
   } catch (error) {
     console.error('Error getting session user:', error);
     return null;
